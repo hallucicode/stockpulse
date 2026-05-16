@@ -1,0 +1,188 @@
+# StockPulse — Claude Instructions
+
+## Testing Rule (MANDATORY)
+
+**Whenever you write or modify any code in `src/`, you MUST:**
+
+1. **Add or update tests** for the changed code in the corresponding `test/` location:
+   - `src/lib/foo.ts` → `test/lib/foo.test.ts`
+   - `src/hooks/foo.ts` → `test/hooks/foo.test.ts`
+   - `src/components/Foo.tsx` → `test/components/Foo.test.tsx`
+   - `src/app/api/foo/route.ts` → `test/api/foo.test.ts`
+
+2. **Run the full test suite with coverage** before reporting the task as done:
+   ```bash
+   npm run test:coverage
+   ```
+
+3. **Verify coverage stays at or above 90%** for lines, statements, and functions, and **at or above 90%** for branches. The thresholds are enforced in `vitest.config.ts` — if `npm run test:coverage` exits non-zero, coverage has dropped and the work is **not done**.
+
+4. **If coverage drops below threshold**, add tests until it passes. Do **not** lower the threshold in `vitest.config.ts` to make tests pass — that defeats the rule.
+
+5. **Never mark a coding task complete** if:
+   - Tests are failing
+   - Coverage is below threshold
+   - You added new code paths without tests
+
+## Current Baseline
+
+- 162+ tests across 16+ test files
+- ~99% statement / line / function coverage, ~95% branch coverage
+- Thresholds in `vitest.config.ts`: lines 95, functions 95, branches 90, statements 95
+
+## Test Stack
+
+- **Vitest** (jsdom environment) — `npm test`, `npm run test:watch`, `npm run test:coverage`
+- **@testing-library/react** for components
+- **vi.mock()** for module mocks (e.g. `@/lib/db`, `yahoo-finance2`, `next/cache`, `next/navigation`)
+- Global mocks live in `test/setup.ts`
+
+## Conventions
+
+- Use `vi.mock("@/lib/...")` at the top of test files for module-level dependencies
+- Use `renderHook` from `@testing-library/react` for hook tests
+- Use `vi.useFakeTimers()` for code that uses `setInterval` / `setTimeout`
+- Each test file should be self-contained and not depend on test ordering
+
+## Excluded From Coverage
+
+These are intentionally excluded in `vitest.config.ts` and do **not** need tests:
+- `src/app/layout.tsx`, `src/app/page.tsx` (pure shells)
+- `src/instrumentation.ts` (Next.js bootstrap hook)
+- `src/lib/cron-alerts.ts` (cron-only entry)
+- `src/types/**`, `*.d.ts`
+
+If you add a new file that genuinely cannot be tested (e.g. another bootstrap hook), add it to the `exclude` list **and explain why in the commit message**.
+
+## Code Quality Rule (MANDATORY)
+
+StockPulse is a **long-lived application**, expected to evolve and grow for years. Whatever code is written must be **maintainable, modular, and extensible**. "Good enough for now" becomes next year's bug factory. Every change — even a one-line fix — must respect these rules.
+
+### Modularity & extensibility
+
+- **One concern per module, narrow public API.** Cross-module access goes through that API. No reaching into another module's internals or DB tables it doesn't own.
+- **Use `src/lib/<feature>/` directory** when a feature grows beyond one file. Keep deep import paths (`../../../`) out of consumer code.
+- **Interfaces for replaceable implementations.** Data sources, signals, notification channels, brokers all sit behind named interfaces (e.g. `MarketDataSource`, `SignalProvider`, `NotificationChannel`). Today's Yahoo + ntfy.sh impls must be swappable without touching callers.
+- **The third copy is a bug.** When you find yourself writing the same shape of code a third time, **refactor first, then add the new case**. Two copies = tolerable; three = extract an abstraction.
+- **Single source of truth for shared types.** Domain types (`Analysis`, `Signal`, `Position`, `TradeCandidate`) live in `src/types/`. No parallel re-definitions per consumer.
+
+### Do not write fragile code
+
+Fragile code passes tests today and breaks tomorrow when something nearby changes. Concretely, **avoid all of these**:
+
+- ❌ **Silent failures.** Never `catch (e) {}`. Every `catch` either handles the error meaningfully (with a logged reason) or rethrows with added context.
+- ❌ **Hidden coupling.** Modules must not depend on globals, mutable singletons, or implicit ordering of side effects.
+- ❌ **Magic numbers.** RSI thresholds, score weights, intervals, retry counts — all live in named, typed config. One source of truth per value, easy to grep, easy to backtest variations.
+- ❌ **`any` in TypeScript** except at a clearly documented external boundary (e.g. parsing an unknown API response — and even then, validate before propagating).
+- ❌ **Long functions / deep nesting.** > ~40 lines or > 3 levels of nesting → split it.
+- ❌ **Mutable shared state across call sites.** Use immutable data, or give the state a single explicit owner.
+- ❌ **Timing-dependent tests.** Use `vi.useFakeTimers()`, deterministic seeds. No `setTimeout(..., 50)` waits.
+- ❌ **Quietly producing zero/null on bad input.** Failing fast > corrupted state. Invalid input throws or returns an explicit `Result` type — never a placeholder zero that propagates silently.
+- ❌ **Hard-coded API keys, URLs, paths.** `.env` for secrets, named config for everything else.
+
+### Pure core, side effects at edges
+
+- **Pure functions** for indicator math, scoring, risk calculation, regime classification, diagnosis. Same input → same output, no I/O, no clock reads, no DB.
+- **Side-effect modules** (DB writes, HTTP calls, scheduling, file I/O) are isolated and clearly named (`background-fetcher`, `db`, `notifications`). They orchestrate; they don't compute.
+- This split is the single biggest factor in long-term maintainability. Pure code is trivial to test and reuse; mixed code is the source of most production bugs.
+
+### Backwards-compatible data evolution
+
+- Schema changes go through **Prisma migrations** with a written rationale in the migration name and PR description.
+- **Never edit a deployed migration**; only add new ones.
+- Old paper-trade and signal records must remain readable forever — they are the ground truth for model-decay analysis. Do not break their schema.
+
+### Observability is not optional
+
+- Every external API call, every cron run, every signal computation logs **structured events** (symbol, timing, outcome, error).
+- When a regression is reported at month 9, the logs are the only chance of diagnosing it. Build for that day now.
+
+### Self code review (MANDATORY before reporting done)
+
+After writing or modifying any code, **before** running tests and **before** declaring the task complete, perform a self-review pass:
+
+1. **Re-read the diff as if reviewing someone else's PR.** Read it top to bottom; don't trust your own intent.
+2. Ask explicitly:
+   - Is this the **simplest** design that meets the requirement?
+   - Does it **duplicate** logic that already exists? Could a small abstraction eliminate the duplication?
+   - Are **error paths explicit**? What happens when the network fails, the DB is locked, the input is malformed?
+   - Are tests testing **behavior** (observable outputs) or **implementation** (internal calls)? Behavior tests survive refactors; implementation tests don't.
+   - Are there **untested branches**? Run coverage and inspect uncovered lines — don't paper over them.
+3. **Look for fragility tells**: silent catches, magic numbers, hidden coupling, `any`, long functions, timing-based tests, mutated shared state.
+4. **Fix what's found before committing.** Don't defer to "I'll clean this up later" — there is no later.
+
+Self-review takes 2–5 minutes per change and prevents weeks of compounding mess. It is **not optional**.
+
+### Tech-debt disclosure (MANDATORY before reporting done)
+
+Sometimes finishing a task cleanly would require refactoring nearby code, and doing that refactor inline would balloon the scope. That's fine — **keeping the task tight is often the right call**. What's NOT fine is silently leaving the debt in the codebase where it gets forgotten.
+
+**The rule:** if you introduce tech debt during a task, or notice that a refactoring is needed and you deliberately keep it out of scope to ship the current task, you **MUST** surface it at the end of the task. The user needs to know about it so they can plan it properly — either as its own phase in `IMPLEMENTATION_PLAN.md` or as an item in the "Unscheduled — open backlog" section.
+
+**What counts as tech debt that must be raised:**
+
+- **Third copy introduced.** You added a second or third instance of the same pattern (sleep loops, error envelopes, score-clamp helpers, scoreToRecommendation duplicates) instead of extracting it.
+- **Workaround / TODO left in the code.** Any `// TODO`, `// FIXME`, or "this should really be X but..." comment.
+- **Refactor postponed.** You noticed an existing module is too large / has bad abstractions / is hard to extend, and you worked around it rather than fixing it.
+- **Test gap accepted.** A code path you couldn't easily cover (e.g. a defensive null check that's near-impossible to trigger from tests). Note it.
+- **Schema awkwardness.** New field added in a place that doesn't really belong there, because the proper home would require restructuring.
+- **Coverage thresholds met globally but a new file is under the per-file ideal.** Note the file + why coverage is tight.
+- **Performance shortcut.** A query / loop that works at today's scale but you can see breaking at 10×.
+- **Cross-cutting infra not done.** You leaned on something the codebase doesn't have yet (e.g. shared rate-limiter), and re-implemented locally.
+- **Dependency-version drift.** You hit a deprecated API or a "this could be upgraded" notice and ignored it.
+
+**How to raise it:** at the end of your final task summary, include a short **"⚠️ Tech debt introduced / noticed"** section listing each item with:
+
+1. **What** — one-line description of the debt.
+2. **Where** — file paths + brief location.
+3. **Why deferred** — what would have made the current task significantly bigger.
+4. **Suggested home** — a specific phase in `IMPLEMENTATION_PLAN.md`, OR the suggestion to add a line to the "Unscheduled — open backlog" section.
+
+If there's no tech debt, **say so explicitly** — "No tech debt introduced." That's a positive signal, not a silent omission.
+
+**Examples of the right tone:**
+
+> ⚠️ Tech debt introduced:
+> 1. **Third copy of `scoreToRecommendation`** — duplicated in `options.ts` (the prior two are in `analysts.ts` and `insiders.ts`). Per "third copy is a bug", this should be extracted to a shared helper.
+>    - Where: `src/lib/options.ts:220`, `src/lib/analysts.ts:70`, `src/lib/insiders.ts:90`.
+>    - Why deferred: extracting it requires picking a home module + updating both existing callers + their tests; Phase 8 was already 12+ files.
+>    - Suggested home: Phase 10 (Scheduler + rate-limit refactor) is the natural place — same "extract shared helpers" theme.
+
+> No tech debt introduced.
+
+This rule is the difference between a codebase that gets quietly fragile over years and one that stays maintainable. **It is not optional.**
+
+## Planning files: `IMPLEMENTATION_PLAN.md` vs `DONE.md`
+
+The roadmap is split into two files:
+
+- **`IMPLEMENTATION_PLAN.md`** — what's *still to do*. Priority-ordered list of upcoming phases plus the "Unscheduled — open backlog" pool. This is the file you scan when picking the next task.
+- **`DONE.md`** — phases that have shipped, with their `Shipped`, `Deferred`, `Tests & coverage`, and `Effort` notes preserved verbatim. Append-only history.
+
+### Workflow when a phase ships (MANDATORY)
+
+When you finish implementing a phase from `IMPLEMENTATION_PLAN.md`:
+
+1. **Mark it ✅ DONE** in the phase heading and write its `**Shipped:**` / `**Deferred:**` / `**Tests & coverage:**` summary inline (same shape as the existing entries in `DONE.md`).
+2. **Move the entire phase section out of `IMPLEMENTATION_PLAN.md` and into `DONE.md`**, appended to the bottom in numerical order. Keep the section content verbatim — don't summarise it away. The historical detail is what makes the "deviation from plan" notes useful later.
+3. **Update the "Quick index of what's done" list** at the top of `IMPLEMENTATION_PLAN.md` to include the new entry.
+4. **Update the `## Total timeline` section** in `IMPLEMENTATION_PLAN.md`:
+   - Bump the "Done so far: ~N days of build time" total.
+   - Remove the just-shipped phase from the "🚧 Remaining (priority order)" table and re-cascade the cumulative-day column.
+5. **Update any forward references** in still-upcoming phases that point at the just-shipped phase by its old "was Phase N" alias — those parenthetical hints are now historical, not predictive.
+6. **Update `DONE.md`'s opening "Done so far" sentence** so the day-count + phase count stay in sync.
+
+### Why this matters
+
+The roadmap is a planning artefact, not a logbook. Mixing 600 lines of done-work shipped-notes with the 12 lines describing the next phase makes the *next* item hard to see — exactly what happened with the original "Cross-cutting infrastructure" table at the bottom that buried CI, cron consolidation, and the rate-limit layer for eight phases.
+
+**Don't leave a completed phase in `IMPLEMENTATION_PLAN.md` "for now."** Move it the same commit it shipped. That keeps the active plan small enough to read in 30 seconds.
+
+## Quick Reference
+
+```bash
+npm test                    # run all tests once
+npm run test:watch          # watch mode for active development
+npm run test:coverage       # required before completing any code change
+npx vitest run path/to/test # run a single test file
+```

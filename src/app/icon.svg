@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!--
+    StockPulse icon — "Liftoff".
+    Topic: freedom (paper plane in flight, open sky direction).
+    Success hint: rising step-chart trail showing the climb to lift-off.
+    Two filled triangles for the plane (upper wing brighter, underside
+    folded slightly darker) + a single dashed-step trail.
+  -->
+  <defs>
+    <linearGradient id="brand" x1="0" y1="64" x2="64" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="55%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rising chart-line trail — the "where it came from" success hint. -->
+  <path
+    d="M 4 58 L 10 58 L 14 50 L 22 50 L 26 40"
+    fill="none"
+    stroke="url(#brand)"
+    stroke-width="2.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity="0.55"
+  />
+
+  <!-- Paper plane — upper wing (full brightness). -->
+  <path
+    d="M 58 8 L 10 30 L 32 28 Z"
+    fill="url(#brand)"
+  />
+
+  <!-- Paper plane — underside fold (slightly darker for depth). -->
+  <path
+    d="M 58 8 L 32 28 L 24 50 Z"
+    fill="url(#brand)"
+    opacity="0.72"
+  />
+</svg>

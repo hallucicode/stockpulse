@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" width="280" height="64">
+  <!--
+    StockPulse logo — paper-plane mark + wordmark.
+    Same liftoff metaphor as the icon (freedom + success). Mark uses the
+    full gradient; "Pulse" accent in cyan→emerald to echo the icon while
+    keeping "Stock" neutral for readability.
+  -->
+  <defs>
+    <linearGradient id="logoBrand" x1="0" y1="64" x2="64" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7c3aed"/>
+      <stop offset="55%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="pulseAccent" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Icon group (identical geometry to src/app/icon.svg) -->
+  <g>
+    <path
+      d="M 4 58 L 10 58 L 14 50 L 22 50 L 26 40"
+      fill="none"
+      stroke="url(#logoBrand)"
+      stroke-width="2.6"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      opacity="0.55"
+    />
+    <path d="M 58 8 L 10 30 L 32 28 Z" fill="url(#logoBrand)"/>
+    <path d="M 58 8 L 32 28 L 24 50 Z" fill="url(#logoBrand)" opacity="0.72"/>
+  </g>
+
+  <!-- Wordmark. "Stock" stays light/neutral; "Pulse" picks up the brand
+       gradient so the eye lands on the action word. -->
+  <text
+    x="80" y="44"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif"
+    font-size="30"
+    font-weight="700"
+    letter-spacing="-0.6"
+  >
+    <tspan fill="#e2e8f0">Stock</tspan><tspan fill="url(#pulseAccent)">Pulse</tspan>
+  </text>
+</svg>

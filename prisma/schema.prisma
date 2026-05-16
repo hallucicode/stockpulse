@@ -1,0 +1,327 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Stocks on your watchlist — the volatile tickers you're tracking
+model WatchlistStock {
+  id        String   @id @default(cuid())
+  symbol    String   @unique
+  name      String
+  sector    String   @default("Unknown")
+  addedAt   DateTime @default(now())
+
+  positions Position[]
+  alerts    Alert[]
+}
+
+/// A position you own (or owned)
+model Position {
+  id         String   @id @default(cuid())
+  symbol     String
+  shares     Float
+  buyPrice   Float
+  buyDate    DateTime @default(now())
+  sellPrice  Float?
+  sellDate   DateTime?
+  notes      String?
+
+  stock      WatchlistStock @relation(fields: [symbol], references: [symbol])
+
+  /// Computed at query time, but stored for history
+  status     String   @default("open") // "open" | "closed"
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+/// Price alerts and signal notifications
+model Alert {
+  id         String   @id @default(cuid())
+  symbol     String
+  type       String   // "buy_signal" | "sell_signal" | "price_target" | "stop_loss"
+  condition  String   // human-readable: "RSI below 30", "Price above $150"
+  threshold  Float?
+  triggered  Boolean  @default(false)
+  triggeredAt DateTime?
+
+  stock      WatchlistStock @relation(fields: [symbol], references: [symbol])
+
+  createdAt  DateTime @default(now())
+}
+
+/// Cached price snapshots to avoid hitting APIs too often
+model PriceCache {
+  id        String   @id @default(cuid())
+  symbol    String
+  price     Float
+  change    Float    @default(0)
+  changePct Float    @default(0)
+  volume    Float    @default(0)
+  high      Float    @default(0)
+  low       Float    @default(0)
+  fetchedAt DateTime @default(now())
+
+  @@index([symbol, fetchedAt])
+}
+
+/// Cached analysis results — updated by background fetcher every 5-10 min
+model AnalysisCache {
+  id        String   @id @default(cuid())
+  symbol    String   @unique
+  data      String   // JSON: { symbol, name, sector, analysis }
+  fetchedAt DateTime @default(now())
+
+  @@index([fetchedAt])
+}
+
+/// Upcoming earnings events (Phase 3). Refreshed daily from a calendar
+/// provider (Finnhub free tier in v1). Used to suppress / flag buy signals
+/// within N trading days of an earnings announcement.
+///
+/// `(symbol, date)` is unique because a given company can only report once
+/// on any given date — re-fetching just upserts the same row.
+model EarningsEvent {
+  id          String   @id @default(cuid())
+  symbol      String
+  date        DateTime // the announcement date (00:00 UTC of the day)
+  epsEstimate Float?
+  hour        String?  // "bmo" (before market open) | "amc" (after close) | "dmh" (during market hours)
+  fetchedAt   DateTime @default(now())
+
+  @@unique([symbol, date])
+  @@index([date])
+  @@index([symbol])
+}
+
+/// Cached diagnosis output per symbol. Avoids re-running the regex
+/// classifier when the underlying headlines haven't changed since the last
+/// computation — keyed off a hash of the headline list.
+///
+/// Why cache a pure function? Two reasons:
+/// 1. Auditability — `fetchedAt` tells us when the diagnosis last *changed*,
+///    not just when the cycle ran. Useful when debugging "why is this stock
+///    suddenly tagged FRAUD?".
+/// 2. UI stability — cards don't churn category mid-cycle just because we
+///    re-classified the same headlines.
+model DiagnosisCache {
+  id              String   @id @default(cuid())
+  symbol          String   @unique
+  category        String
+  rationale       String
+  scoreAdjustment Int
+  newsCount       Int
+  newsHash        String
+  fetchedAt       DateTime @default(now())
+
+  @@index([fetchedAt])
+}
+
+/// Daily snapshot of the overall market regime (Phase 6).
+/// Computed from SPY (price vs 200-day MA, ADX trend strength) + VIX
+/// (level + percentile). One row per refresh — history is preserved so a
+/// future /regime page can chart the regime over time, and the
+/// background fetcher reads the latest snapshot to weight per-stock
+/// signals appropriately.
+model RegimeSnapshot {
+  id            String   @id @default(cuid())
+  regime        String   // "trending_up" | "trending_down" | "ranging" | "high_vol_crisis"
+  spyClose      Float
+  spy200dma     Float
+  adx14         Float
+  vixLevel      Float
+  vixPercentile Float    // 0-100; current VIX vs trailing 252-day window
+  fetchedAt     DateTime @default(now())
+
+  @@index([fetchedAt])
+}
+
+/// Daily options-chain snapshot per symbol (Phase 8).
+///
+/// One row per (symbol, day) so we can compute IV rank as the percentile
+/// of today's ATM IV against the trailing N-day window. Yahoo doesn't
+/// expose historical IV — we have to build the series ourselves, which
+/// is why this table grows over time before the rank signal becomes
+/// meaningful (~60 trading days, per OPTIONS_CONFIG.minHistoryDaysForRank).
+///
+/// All fields are nullable because many tickers don't have liquid options
+/// (microcaps, OTC) — we still persist the snapshot so the audit log
+/// reflects "we checked".
+model OptionsSnapshot {
+  id               String   @id @default(cuid())
+  symbol           String
+  /// ATM implied volatility expressed as a fraction (0.35 = 35%). Null
+  /// when no options chain or no near-ATM contracts found.
+  atmIV            Float?
+  /// Put volume / call volume across the nearest expiry. > 1 = put-heavy.
+  putCallRatio     Float?
+  /// ATM put IV - ATM call IV. Positive = put-side fear premium ("skew").
+  skew             Float?
+  /// `unusualCalls`/`unusualPuts` triggered when side volume / open
+  /// interest exceeds OPTIONS_CONFIG.unusualVolumeOiRatio.
+  unusualCalls     Boolean  @default(false)
+  unusualPuts      Boolean  @default(false)
+  /// Aggregated volume/OI across the nearest expiry — surfaced for the
+  /// UI tooltip + audit trail.
+  callVolume       Int      @default(0)
+  putVolume        Int      @default(0)
+  callOpenInterest Int      @default(0)
+  putOpenInterest  Int      @default(0)
+  fetchedAt        DateTime @default(now())
+
+  @@index([symbol, fetchedAt])
+  @@index([fetchedAt])
+}
+
+/// Per-sector ETF trend snapshot (Phase 7.1).
+///
+/// Daily classification of each sector ETF (XLK, XLF, XLV, ...) into a
+/// rotation state ("turning_up" | "trending_up" | "flat" | "trending_down"
+/// | "turning_down"). The "turning_up" state — sector recently emerged
+/// from an extended downtrend — fires a +1 catalyst on every stock in
+/// that sector via Phase 7's catalyst aggregator.
+///
+/// Only the latest snapshot per sector is needed for live scoring; history
+/// is kept (one row per refresh) so a future /sectors page can chart it
+/// and Phase 11 backtests can replay sector states deterministically.
+model SectorSnapshot {
+  id           String   @id @default(cuid())
+  sector       String   // app sector key (e.g. "Tech", "Healthcare"); maps to one ETF
+  etfSymbol    String   // the ETF used as the sector proxy (XLK, XLV, ...)
+  state        String   // "turning_up" | "trending_up" | "flat" | "trending_down" | "turning_down"
+  close        Float
+  sma200       Float
+  // Run lengths used by the classifier — surfaced so the /logs and future
+  // /sectors page can show "above 200dma for 6 bars after 47 bars below".
+  recentUpBars Int
+  priorDownBars Int
+  fetchedAt    DateTime @default(now())
+
+  @@index([sector, fetchedAt])
+  @@index([fetchedAt])
+}
+
+/// Per-symbol Form 4 insider transactions (sourced from Finnhub's
+/// `/stock/insider-transactions`, which derives from SEC EDGAR Form 4
+/// filings). Used by `insiders.ts` to detect cluster buys — when ≥2
+/// distinct insiders buy on the open market within 14 days, that's the
+/// strongest single-name signal in finance.
+///
+/// Refreshed daily; we keep the last 90 days per symbol to bound table size.
+model InsiderTransaction {
+  id              String   @id @default(cuid())
+  symbol          String
+  filerName       String
+  transactionDate DateTime
+  transactionCode String?  // SEC code: "P" (purchase), "S" (sale), "A" (award), etc.
+  shareChange     Float    // signed: positive = bought, negative = sold
+  price           Float?
+  totalValue      Float?   // |shareChange| * price when both known
+  fetchedAt       DateTime @default(now())
+
+  @@unique([symbol, filerName, transactionDate, shareChange])
+  @@index([symbol, transactionDate])
+}
+
+/// Per-symbol analyst rating actions (Finnhub `/stock/upgrade-downgrade`).
+/// Used by `analysts.ts` to nudge the score on recent up/downgrades.
+model AnalystAction {
+  id            String   @id @default(cuid())
+  symbol        String
+  firm          String
+  fromGrade     String?
+  toGrade       String?
+  action        String   // "up" | "down" | "init" | "main"
+  publishedAt   DateTime
+  fetchedAt     DateTime @default(now())
+
+  @@unique([symbol, firm, publishedAt, action])
+  @@index([symbol, publishedAt])
+}
+
+/// Per-symbol fundamentals snapshot from Finnhub. Refreshed weekly — these
+/// numbers don't change daily, and the free tier rate-limits are tight.
+///
+/// Used by `fundamentals.ts` to apply hard vetoes ("must have earnings",
+/// "not microcap", "not over-leveraged") in addition to the existing
+/// price-based Phase 2.5 quality gate.
+model FundamentalsSnapshot {
+  id                  String   @id @default(cuid())
+  symbol              String   @unique
+  marketCap           Float?   // absolute USD (Finnhub returns millions; we normalise on ingest)
+  peRatio             Float?
+  debtToEquity        Float?
+  freeCashFlowTtm     Float?
+  epsTtm              Float?
+  revenueGrowthYoy    Float?   // % YoY
+  hasReportedEarnings Boolean  @default(false)
+  fetchedAt           DateTime @default(now())
+
+  @@index([symbol])
+}
+
+/// Per-symbol news items from Finnhub. Used by `diagnosis.ts` to classify
+/// *why* a stock dropped (sector selloff, earnings miss, lawsuit, etc.).
+///
+/// Refreshed daily by the news-source cron (analogous to earnings). We keep
+/// only the last ~30 days per symbol to bound table growth.
+model NewsItem {
+  id          String   @id @default(cuid())
+  symbol      String
+  externalId  String   // Finnhub's news id (deduplication key)
+  headline    String
+  summary     String   @default("")
+  source      String   @default("")
+  url         String   @default("")
+  category    String   @default("")  // Finnhub's own category (company | general | ...)
+  publishedAt DateTime
+  fetchedAt   DateTime @default(now())
+
+  @@unique([symbol, externalId])
+  @@index([symbol, publishedAt])
+}
+
+/// Persisted application logs — surfaced on `/logs`.
+///
+/// Not every log entry lands here; we whitelist (1) every warn/error and
+/// (2) a small set of "milestone" info events (refresh.done, start, etc.)
+/// so the table stays small and readable. See `log-persistence.ts`.
+///
+/// Cleanup: a periodic prune removes entries older than 30 days. If a future
+/// outage floods this table, the read API caps results so the UI stays
+/// responsive even before the prune runs.
+model LogEntry {
+  id        String   @id @default(cuid())
+  timestamp DateTime
+  level     String   // "debug" | "info" | "warn" | "error"
+  component String   // e.g. "earnings", "fetcher", "market-data"
+  event     String   // e.g. "refresh.done", "fetch.http-error"
+  meta      String?  // JSON-encoded — never queried, only displayed
+  createdAt DateTime @default(now())
+
+  @@index([timestamp])
+  @@index([level, timestamp])
+  @@index([component, timestamp])
+}
+
+/// Data-quality audit log — Phase 0 firewall.
+/// Every time the validator finds a problem with ingested data, an entry is
+/// written here. Used for debugging "why did this stock disappear?", spotting
+/// systematic provider issues, and (Phase 1+) auto-removing chronically bad
+/// tickers from the watchlist.
+model DataQualityLog {
+  id        String   @id @default(cuid())
+  symbol    String
+  type      String   // see data-quality.ts: "stale_data" | "halt_run" | "huge_gap" | "invalid_bar" | "empty_history"
+  severity  String   // "low" | "medium" | "high" | "critical"
+  detail    String
+  loggedAt  DateTime @default(now())
+  resolved  Boolean  @default(false)
+
+  @@index([symbol, resolved])
+  @@index([loggedAt])
+}
