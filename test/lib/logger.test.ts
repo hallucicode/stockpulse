@@ -58,10 +58,8 @@ describe("logger", () => {
 // covered. We re-import the module with VITEST flag cleared and stub console.
 describe("logger consoleSink", () => {
   it("dispatches each level to the right console method", async () => {
-    const originalVitest = process.env.VITEST;
-    const originalNodeEnv = process.env.NODE_ENV;
-    process.env.VITEST = "false";
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("VITEST", "false");
+    vi.stubEnv("NODE_ENV", "production");
 
     vi.resetModules();
     const fresh = await import("@/lib/logger");
@@ -86,8 +84,7 @@ describe("logger consoleSink", () => {
     warnSpy.mockRestore();
     errorSpy.mockRestore();
 
-    process.env.VITEST = originalVitest;
-    process.env.NODE_ENV = originalNodeEnv;
+    vi.unstubAllEnvs();
     vi.resetModules();
   });
 });

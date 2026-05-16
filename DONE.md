@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 8 (~36 days of build time).
+**Done so far:** Phases 0 through 9 (~37 days of build time).
 
 ---
 
@@ -428,3 +428,44 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 - Coverage stays above thresholds (≥95 lines/funcs/stmts, ≥90 branches).
 
 ### Effort: **5 days**. Most complex external integration.
+
+---
+
+## Phase 9 — Continuous integration ✅ DONE
+
+**Goal:** Stop relying on "remembering to run `npm run test:coverage` locally" for enforcement. The 95% coverage rule and TypeScript correctness should be guarded by automation that blocks merges when they regress.
+
+**Shipped:**
+- `.github/workflows/ci.yml` — GitHub Actions workflow that runs on every push to `main` and every PR targeting `main`:
+  - Checks out the code (`actions/checkout@v4`).
+  - Sets up Node 20 LTS (`actions/setup-node@v4`) with built-in npm cache keyed on `package-lock.json`.
+  - `npm ci` — clean reproducible install.
+  - `npx prisma generate` — Prisma client is generated, not committed, so the test suite needs it.
+  - `npm run typecheck` (= `tsc --noEmit`) — new script.
+  - `npm run test:coverage` — runs vitest with v8 coverage, enforcing the thresholds in `vitest.config.ts` (lines ≥ 95, branches ≥ 90, functions ≥ 95, statements ≥ 95). Non-zero exit fails the job.
+  - `concurrency: cancel-in-progress` — a newer push on the same ref kills the stale run.
+- New `typecheck` script in `package.json`.
+- CI status badge in `README.md` linking to the workflow page.
+
+**Latent TypeScript debt cleared as part of this phase** (would otherwise have blocked CI from going green on day 1):
+- Production code:
+  - `src/lib/options-source.ts` — Yahoo's `yf.options(symbol)` has overloads that can resolve to `Promise<unknown>` in TS's inference path. Introduced an explicit `YahooOptionsResult` interface that captures *exactly* the fields we depend on (documented external boundary, per CLAUDE.md).
+  - `src/lib/sector-rotation.ts` — `attachSectorRotation<T>` lacked an `extends object` constraint and TS couldn't verify the null-early-return matched the return type. Added the constraint and an explicit cast on the null branch.
+- Test ergonomics:
+  - Extracted explicit `CatalystConfig`, `SectorRotationConfig`, `OptionsConfig`, `EarningsConfig` interfaces in `src/lib/config.ts`. The `as const` source-of-truth values are unchanged, but the pure-module function parameters now type their `cfg` against the looser interface — so tests can pass overrides without hitting "number is not literal 2" errors.
+- Test files:
+  - `test/lib/db.test.ts` + `test/lib/logger.test.ts` — replaced `process.env.NODE_ENV = "..."` with `vi.stubEnv("NODE_ENV", "...")`. Node 20+ types `NODE_ENV` as readonly.
+  - `test/lib/earnings.test.ts` — passed a value of `false` to a parameter typed as literal `true` due to `as const`; fixed via the new `EarningsConfig` interface above.
+
+**Verification:**
+- Before: `tsc --noEmit` exited 1 with 25 errors across 8 files (silently passing only because vitest's compiler is more lenient than `tsc`).
+- After: `tsc --noEmit` exits 0.
+- 626 tests pass; coverage 97.19 / 92.47 / 98.41 / 97.19 — unchanged.
+- Real-world test: once CI runs on the PR for this phase, the workflow itself proves it can fail a broken commit (the plan's "Tests" section).
+
+**Deferred (tracked in `IMPLEMENTATION_PLAN.md`):**
+- **ESLint via `next lint`** — original plan called for "TypeScript + ESLint". Adding it requires creating an `.eslintrc`, installing `eslint-config-next`, and fixing every lint warning on existing code. That's its own sub-phase; bundling it here would have ballooned Phase 9 well past its 0.5-day budget. Listed as tech debt below.
+- **Coverage artifact upload / Codecov integration** — useful for time-series trends but not necessary for the "block merges below threshold" goal.
+- **Nightly JUnit-format run** — was marked optional in the plan; can be added later if we ever care about coverage history beyond what's already in DONE.md / each phase summary.
+
+### Effort: **1 day** (0.5 plan + 0.5 unscheduled TypeScript cleanup that CI itself surfaced).

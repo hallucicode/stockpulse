@@ -17,7 +17,11 @@ import type {
   OptionsActivity,
   TechnicalSignal,
 } from "@/types";
-import { OPTIONS_CONFIG, RECOMMENDATION_THRESHOLDS } from "./config";
+import {
+  OPTIONS_CONFIG,
+  RECOMMENDATION_THRESHOLDS,
+  type OptionsConfig,
+} from "./config";
 
 /** Subset of the Yahoo CallOrPut we depend on — keeps tests easy to build. */
 export interface OptionContract {
@@ -47,7 +51,7 @@ export interface OptionsChainSlice {
 export function pickAtm(
   contracts: OptionContract[],
   underlyingPrice: number,
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): OptionContract | null {
   if (contracts.length === 0) return null;
   const tolerance = underlyingPrice * cfg.atmTolerancePct;
@@ -111,7 +115,7 @@ export function calcSkew(
 export function calcIVRank(
   currentIV: number,
   historical: number[],
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): number | null {
   const valid = historical.filter((x) => Number.isFinite(x));
   if (valid.length < cfg.minHistoryDaysForRank) return null;
@@ -130,7 +134,7 @@ export function calcIVRank(
  */
 export function detectUnusual(
   agg: { callVolume: number; putVolume: number; callOpenInterest: number; putOpenInterest: number },
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): { unusualCalls: boolean; unusualPuts: boolean } {
   const isUnusual = (vol: number, oi: number) =>
     oi >= cfg.unusualMinOpenInterest && vol / oi >= cfg.unusualVolumeOiRatio;
@@ -148,7 +152,7 @@ export function detectUnusual(
 export function evaluateOptionsActivity(
   slice: OptionsChainSlice | null,
   historicalIV: number[],
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): OptionsActivity {
   if (slice === null) {
     return emptyActivity();
@@ -207,7 +211,7 @@ function emptyActivity(): OptionsActivity {
  */
 export function computeOptionsScoreAdjustment(
   inputs: { ivRank: number | null; unusualCalls: boolean; unusualPuts: boolean },
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): number {
   let adj = 0;
   if (inputs.ivRank !== null) {
@@ -236,7 +240,7 @@ function scoreToRecommendation(score: number): Analysis["recommendation"] {
 /** Synthesise UI signals from an OptionsActivity. Pure helper for the apply step. */
 function activityToSignals(
   activity: OptionsActivity,
-  cfg: typeof OPTIONS_CONFIG
+  cfg: OptionsConfig
 ): TechnicalSignal[] {
   const out: TechnicalSignal[] = [];
   if (activity.ivRank !== null) {
@@ -284,7 +288,7 @@ function activityToSignals(
 export function applyOptionsAdjustment(
   analysis: Analysis,
   activity: OptionsActivity,
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): Analysis {
   if (activity.scoreAdjustment === 0) {
     return { ...analysis, options: activity };

@@ -20,7 +20,7 @@ import type {
   DiagnosisCategory,
   SectorRotationState,
 } from "@/types";
-import { CATALYST_CONFIG } from "./config";
+import { CATALYST_CONFIG, type CatalystConfig } from "./config";
 
 export interface CatalystInput {
   earnings?: { daysUntil: number } | null;
@@ -38,7 +38,7 @@ export interface CatalystInput {
  */
 export function evaluateCatalysts(
   input: CatalystInput,
-  cfg: typeof CATALYST_CONFIG = CATALYST_CONFIG
+  cfg: CatalystConfig = CATALYST_CONFIG
 ): CatalystInfo {
   const present: CatalystType[] = [];
   let score = 0;
@@ -108,7 +108,7 @@ export function evaluateCatalysts(
  */
 export function applyCatalystAdjustment(
   analysis: Analysis,
-  cfg: typeof CATALYST_CONFIG = CATALYST_CONFIG
+  cfg: CatalystConfig = CATALYST_CONFIG
 ): Analysis {
   const info = evaluateCatalysts(
     {
