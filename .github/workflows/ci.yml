@@ -12,14 +12,12 @@
 #   4. `npx prisma generate` — the Prisma client is generated, not
 #      committed; tests need it before the suite can import @prisma/client.
 #   5. `npm run typecheck` — `tsc --noEmit` across src/ and test/.
-#   6. `npm run test:coverage` — vitest run with v8 coverage, enforcing
+#   6. `npm run lint` — `next lint --max-warnings=0` (any warning fails).
+#   7. `npm run test:coverage` — vitest run with v8 coverage, enforcing
 #      the global thresholds (lines ≥ 95, branches ≥ 90, functions ≥ 95,
 #      statements ≥ 95).
 #
-# Deliberately NOT here yet (tracked as tech debt in IMPLEMENTATION_PLAN.md):
-#   - ESLint via `next lint`. Adding it requires creating an .eslintrc
-#     and fixing any lint warnings on existing code; that's its own
-#     sub-phase.
+# Deliberately NOT here yet:
 #   - Coverage artifact upload (e.g. to Codecov) — not worth the wiring
 #     until we want time-series trends.
 #   - Nightly junit run — listed as optional in the Phase 9 plan; can
@@ -68,6 +66,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Lint (next lint, --max-warnings=0)
+        run: npm run lint
 
       - name: Tests + coverage (enforces thresholds in vitest.config.ts)
         run: npm run test:coverage

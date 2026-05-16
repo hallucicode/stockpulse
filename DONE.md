@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 9 (~37 days of build time).
+**Done so far:** Phases 0 through 9.5 (~37.5 days of build time).
 
 ---
 
@@ -464,8 +464,37 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 - Real-world test: once CI runs on the PR for this phase, the workflow itself proves it can fail a broken commit (the plan's "Tests" section).
 
 **Deferred (tracked in `IMPLEMENTATION_PLAN.md`):**
-- **ESLint via `next lint`** — original plan called for "TypeScript + ESLint". Adding it requires creating an `.eslintrc`, installing `eslint-config-next`, and fixing every lint warning on existing code. That's its own sub-phase; bundling it here would have ballooned Phase 9 well past its 0.5-day budget. Listed as tech debt below.
+- **ESLint via `next lint`** — original plan called for "TypeScript + ESLint". Done as a follow-up Phase 9.5 (see below) once Phase 9 had landed cleanly.
 - **Coverage artifact upload / Codecov integration** — useful for time-series trends but not necessary for the "block merges below threshold" goal.
 - **Nightly JUnit-format run** — was marked optional in the plan; can be added later if we ever care about coverage history beyond what's already in DONE.md / each phase summary.
 
 ### Effort: **1 day** (0.5 plan + 0.5 unscheduled TypeScript cleanup that CI itself surfaced).
+
+---
+
+## Phase 9.5 — ESLint setup ✅ DONE
+
+**Why this is its own sub-phase:** the original Phase 9 plan called for "TypeScript + ESLint" but the lurking TypeScript debt Phase 9 had to clear already pushed Phase 9 past its 0.5-day budget. Bundling ESLint on top risked a noisy first-run if the existing code triggered dozens of warnings. Pulled out as a focused follow-up so each PR stays small.
+
+**Shipped:**
+- `eslint@^8.57.1` + `eslint-config-next@^14.2.35` added as `devDependencies`. Versions pinned to ESLint 8 / Next 14 — ESLint 9's flat-config requires significant Next.js work that isn't needed here.
+- `.eslintrc.json` — extends `next/core-web-vitals` (the official Next.js preset that bundles React Hooks rules + accessibility checks + Core Web Vitals best practices). Per-directory override for `test/**` switches off two rules (`@next/next/no-img-element`, `react/no-unescaped-entities`) that don't apply to test fixtures.
+- `.eslintignore` — excludes `node_modules/`, `.next/`, `coverage/`, `prisma/migrations/`, `*.config.js`, `next-env.d.ts`. Keeps lint focused on `src/` + `test/`.
+- `package.json` scripts:
+  - `lint` → `next lint --max-warnings=0` (any warning fails — same strictness as `tsc --noEmit`).
+  - `lint:fix` → `next lint --fix` for auto-fixing whitespace/import-order issues during local dev.
+- `.github/workflows/ci.yml` updated: new `Lint (next lint, --max-warnings=0)` step sits between `Typecheck` and `Tests + coverage`. Any of the three failing now blocks the PR.
+
+**Existing-code clean-up needed: just 1 lint error.**
+- `src/components/detail-view.tsx:92` — `Couldn't load news` had an unescaped apostrophe that triggered `react/no-unescaped-entities`. Fixed to `Couldn&apos;t load news`.
+
+**Verification:**
+- `npm run lint` → `✔ No ESLint warnings or errors`
+- `npm run typecheck` → exit 0
+- `npm test` → 626 pass; coverage unchanged.
+
+**Deferred:**
+- Migration to ESLint v9 + flat config (`eslint.config.js`) — requires `next` and `eslint-config-next` upgrades. Worth doing when we next bump Next.js. Listed in the "Unscheduled" backlog now.
+- Stricter rules (e.g. `@typescript-eslint/no-explicit-any`, `import/order`) — would require a dedicated cleanup pass on existing `any` usage in tests. Not worth the disruption today; revisit when test-typing debt is on the agenda.
+
+### Effort: **0.5 day** (faster than expected — only 1 lint error on existing code).

@@ -89,7 +89,7 @@ function NewsSection({ symbol, diagnosisRationale }: {
       )}
       {error && (
         <div className="text-[11px] text-rose-400 py-2">
-          Couldn't load news: {error}
+          Couldn&apos;t load news: {error}
         </div>
       )}
       {items && items.length === 0 && (
