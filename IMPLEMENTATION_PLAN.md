@@ -74,6 +74,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 7.1 — Sector rotation catalyst
 - Phase 8 — Options market signals
 - Phase 9 — Continuous integration
+- Phase 9.5 — ESLint setup
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -460,7 +461,7 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~37 days of build time across Phases 0–9. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~37.5 days of build time across Phases 0–9.5. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 

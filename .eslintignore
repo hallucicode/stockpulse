@@ -1,0 +1,6 @@
+node_modules/
+.next/
+coverage/
+prisma/migrations/
+*.config.js
+next-env.d.ts
