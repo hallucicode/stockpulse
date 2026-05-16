@@ -1,0 +1,73 @@
+# StockPulse CI — Phase 9.
+#
+# Runs on every push to main and on every pull request targeting main.
+# The job blocks merge when any step exits non-zero, which means the 95%
+# coverage thresholds in vitest.config.ts are enforced by automation
+# rather than by remembering to run `npm run test:coverage` locally.
+#
+# Steps:
+#   1. Check out the code.
+#   2. Set up Node 20 (LTS) with built-in npm cache for fast installs.
+#   3. `npm ci` — clean reproducible install from package-lock.json.
+#   4. `npx prisma generate` — the Prisma client is generated, not
+#      committed; tests need it before the suite can import @prisma/client.
+#   5. `npm run typecheck` — `tsc --noEmit` across src/ and test/.
+#   6. `npm run test:coverage` — vitest run with v8 coverage, enforcing
+#      the global thresholds (lines ≥ 95, branches ≥ 90, functions ≥ 95,
+#      statements ≥ 95).
+#
+# Deliberately NOT here yet (tracked as tech debt in IMPLEMENTATION_PLAN.md):
+#   - ESLint via `next lint`. Adding it requires creating an .eslintrc
+#     and fixing any lint warnings on existing code; that's its own
+#     sub-phase.
+#   - Coverage artifact upload (e.g. to Codecov) — not worth the wiring
+#     until we want time-series trends.
+#   - Nightly junit run — listed as optional in the Phase 9 plan; can
+#     be added later if we ever care about historical coverage data.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an older run of the same branch when a new commit lands —
+# keeps the CI queue clean during rapid pushes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck + tests + coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          # Built-in npm cache: caches ~/.npm based on package-lock.json hash.
+          # Faster than caching node_modules and avoids OS-path mismatches.
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        # The Prisma client lives in node_modules/@prisma/client but its
+        # contents are generated from prisma/schema.prisma — must run
+        # after `npm ci` so the right version is in place.
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests + coverage (enforces thresholds in vitest.config.ts)
+        run: npm run test:coverage

@@ -13,7 +13,7 @@
 import YahooFinance from "yahoo-finance2";
 import { db } from "./db";
 import { log } from "./logger";
-import { OPTIONS_CONFIG } from "./config";
+import { OPTIONS_CONFIG, type OptionsConfig } from "./config";
 import {
   calcIVRank,
   computeOptionsScoreAdjustment,
@@ -34,10 +34,34 @@ function sleep(ms: number): Promise<void> {
  * empty — that's an expected state for many tickers (microcaps, OTC,
  * non-US listings) and should not be treated as an error.
  */
+/**
+ * Documented external boundary (per CLAUDE.md): yahoo-finance2's `options()`
+ * has multiple typescript overloads (validate-true / validate-false) and TS
+ * can pick the `unknown` one in some inference paths. We capture exactly the
+ * fields we depend on here so the rest of the module stays strongly typed.
+ */
+interface YahooOptionsResult {
+  quote?: { regularMarketPrice?: number };
+  options?: Array<{
+    calls: Array<{
+      strike: number;
+      volume?: number;
+      openInterest?: number;
+      impliedVolatility: number;
+    }>;
+    puts: Array<{
+      strike: number;
+      volume?: number;
+      openInterest?: number;
+      impliedVolatility: number;
+    }>;
+  }>;
+}
+
 async function fetchChainSlice(symbol: string): Promise<OptionsChainSlice | null> {
-  let result: Awaited<ReturnType<typeof yf.options>>;
+  let result: YahooOptionsResult;
   try {
-    result = await yf.options(symbol);
+    result = (await yf.options(symbol)) as YahooOptionsResult;
   } catch (err) {
     // Yahoo throws on tickers without options; treat as "no chain".
     log.warn("options", "fetch.no-chain", { symbol, error: err });
@@ -52,10 +76,12 @@ async function fetchChainSlice(symbol: string): Promise<OptionsChainSlice | null
     return null;
   }
   const underlying = result.quote.regularMarketPrice;
-  if (!Number.isFinite(underlying) || underlying! <= 0) return null;
+  if (underlying === undefined || !Number.isFinite(underlying) || underlying <= 0) {
+    return null;
+  }
   const nearest = result.options[0];
   return {
-    underlyingPrice: underlying!,
+    underlyingPrice: underlying,
     calls: nearest.calls.map((c) => ({
       strike: c.strike,
       volume: c.volume ?? 0,
@@ -78,7 +104,7 @@ async function fetchChainSlice(symbol: string): Promise<OptionsChainSlice | null
  */
 export async function getHistoricalIVForSymbol(
   symbol: string,
-  cfg: typeof OPTIONS_CONFIG = OPTIONS_CONFIG
+  cfg: OptionsConfig = OPTIONS_CONFIG
 ): Promise<number[]> {
   const cutoff = new Date(Date.now() - cfg.ivRankWindowDays * 86_400_000);
   const rows = await db.optionsSnapshot.findMany({

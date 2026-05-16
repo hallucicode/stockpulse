@@ -73,6 +73,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 7 — Catalyst scoring
 - Phase 7.1 — Sector rotation catalyst
 - Phase 8 — Options market signals
+- Phase 9 — Continuous integration
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -88,26 +89,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 ---
 
-## Phase 9 — Continuous integration *(tech debt, overdue)*
-
-**Why now:** The 95% coverage rule is enforced today by remembering to run `npm run test:coverage` locally. That stops being credible the moment a second person ever touches the repo, and stops being credible *period* once Phase 15 (backtest) lands and slow tests start to creep in. Cheap to do; pays off forever.
-
-### Tasks
-1. `.github/workflows/ci.yml` — on every push + PR:
-   - `npm ci`
-   - `npm run lint` (TypeScript + ESLint)
-   - `npm run test:coverage`
-   - Block merge when any step exits non-zero.
-2. Cache `node_modules` and the Prisma client between runs.
-3. Status badge in `README.md`.
-4. Optional: nightly run with `--reporter=junit` so coverage trends can be tracked over time.
-
-### Tests
-- The workflow itself is the test. Add one deliberately-broken commit, verify CI rejects it, revert.
-
-### Effort: **0.5 day**.
-
----
 
 ## Phase 10 — Scheduler + rate-limit refactor *(tech debt, overdue)*
 
@@ -479,25 +460,24 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~36 days of build time across Phases 0–8. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~37 days of build time across Phases 0–9. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 9 | Continuous integration | 0.5 d | 0.5 d |
-| 10 | Scheduler + rate-limit refactor | 2 d | 2.5 d |
-| 11 | Audit log foundation | 1.5 d | 4 d |
-| 12 | FDA / drug-trial catalyst | 1.5 d | 5.5 d |
-| 13 | Tax-aware decisions | 4 d | 9.5 d |
-| 14 | Trade card UI | 3 d | 12.5 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 22.5 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 26.5 d |
-| 17 | Postgres migration | 1.5 d | 28 d |
-| 18 | Decay monitoring | 3 d | 31 d |
-| 19 | Alternative data | 5 d | 36 d |
-| 20 | Portfolio optimization | 5 d | 41 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 56 d |
+| 10 | Scheduler + rate-limit refactor | 2 d | 2 d |
+| 11 | Audit log foundation | 1.5 d | 3.5 d |
+| 12 | FDA / drug-trial catalyst | 1.5 d | 5 d |
+| 13 | Tax-aware decisions | 4 d | 9 d |
+| 14 | Trade card UI | 3 d | 12 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 22 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 26 d |
+| 17 | Postgres migration | 1.5 d | 27.5 d |
+| 18 | Decay monitoring | 3 d | 30.5 d |
+| 19 | Alternative data | 5 d | 35.5 d |
+| 20 | Portfolio optimization | 5 d | 40.5 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 55.5 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

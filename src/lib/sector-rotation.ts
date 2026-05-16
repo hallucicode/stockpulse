@@ -23,7 +23,10 @@ import type {
   SectorRotationInfo,
   SectorRotationState,
 } from "@/types";
-import { SECTOR_ROTATION_CONFIG } from "./config";
+import {
+  SECTOR_ROTATION_CONFIG,
+  type SectorRotationConfig,
+} from "./config";
 
 /** Simple moving average for the last `period` values; returns NaN when short. */
 function sma(values: number[], period: number, endIndex: number): number {
@@ -98,7 +101,7 @@ export interface SectorRotationClassification {
 
 export function classifySectorRotation(
   bars: HistoricalBar[],
-  cfg: typeof SECTOR_ROTATION_CONFIG = SECTOR_ROTATION_CONFIG
+  cfg: SectorRotationConfig = SECTOR_ROTATION_CONFIG
 ): SectorRotationClassification | null {
   if (bars.length < cfg.smaPeriod) return null;
 
@@ -145,10 +148,12 @@ export function classifySectorRotation(
  * new object with `sectorRotation` filled in (or unchanged when no info
  * is available for the symbol's sector).
  */
-export function attachSectorRotation<T>(
+export function attachSectorRotation<T extends object>(
   analysis: T,
   info: SectorRotationInfo | null
 ): T & { sectorRotation?: SectorRotationInfo } {
-  if (!info) return analysis;
+  // `sectorRotation?` is optional, so a T without it satisfies the
+  // intersection shape — but TS can't verify that automatically.
+  if (!info) return analysis as T & { sectorRotation?: SectorRotationInfo };
   return { ...analysis, sectorRotation: info };
 }

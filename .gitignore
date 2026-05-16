@@ -23,3 +23,6 @@ coverage/
 # Logs
 *.log
 npm-debug.log*
+
+# TypeScript incremental-build cache
+tsconfig.tsbuildinfo

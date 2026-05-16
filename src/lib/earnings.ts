@@ -12,7 +12,7 @@
 // recommendation. This module provides the deterministic adjustment.
 
 import type { Analysis, EarningsInfo } from "@/types";
-import { EARNINGS_CONFIG } from "./config";
+import { EARNINGS_CONFIG, type EarningsConfig } from "./config";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -104,7 +104,7 @@ export function downgradeRecommendation(
 export function applyEarningsAdjustment(
   analysis: Analysis,
   earnings: EarningsInfo | null,
-  config = EARNINGS_CONFIG
+  config: EarningsConfig = EARNINGS_CONFIG
 ): Analysis {
   if (!earnings) return analysis;
 

@@ -305,6 +305,23 @@ export const ANALYSTS_CONFIG = {
 // from OptionsSnapshot rows, so IV rank (percentile of today's IV vs
 // trailing window) only becomes meaningful after `minHistoryDaysForRank`
 // snapshots have accumulated.
+export interface OptionsConfig {
+  refreshIntervalMs: number;
+  requestSpacingMs: number;
+  progressLogEveryN: number;
+  ivRankWindowDays: number;
+  minHistoryDaysForRank: number;
+  ivRankLowPercentile: number;
+  ivRankHighPercentile: number;
+  ivRankLowBoost: number;
+  ivRankHighBoost: number;
+  unusualCallBoost: number;
+  unusualPutBoost: number;
+  unusualVolumeOiRatio: number;
+  unusualMinOpenInterest: number;
+  atmTolerancePct: number;
+}
+
 export const OPTIONS_CONFIG = {
   // Daily refresh — IV moves intraday but ranking is a daily concept.
   refreshIntervalMs: 24 * 60 * 60 * 1000,
@@ -395,6 +412,22 @@ export const SECTOR_ETF_MAP: Readonly<Record<string, string>> = {
   Aerospace: "ITA",
 };
 
+// ─── Sector rotation parameter type ───
+//
+// `as const` makes literal types like `historyDays: 320` rather than `number`.
+// Tests need to pass shrunken configs (smaPeriod=10, historyDays=60) to keep
+// fixtures manageable, so pure-function parameters should accept the *shape*
+// not the literal-narrow `typeof`. Same pattern for the other two below.
+export interface SectorRotationConfig {
+  refreshIntervalMs: number;
+  historyDays: number;
+  smaPeriod: number;
+  minPriorDownBars: number;
+  maxRecentUpBars: number;
+  minPriorUpBars: number;
+  maxRecentDownBars: number;
+}
+
 // ─── Catalyst scoring (Phase 7) ───
 //
 // Aggregates the already-decorated catalyst-shaped signals on an Analysis
@@ -413,6 +446,19 @@ export const SECTOR_ETF_MAP: Readonly<Record<string, string>> = {
 // top of the already-adjusted technical score would double-count those same
 // signals. The weighted score is still exposed so the UI can sort/rank by
 // catalyst density.
+export interface CatalystConfig {
+  earningsCatalystWindowDays: number;
+  weights: {
+    earnings_upcoming: number;
+    insider_cluster: number;
+    analyst_upgrade: number;
+    positive_news: number;
+    sector_rotation: number;
+  };
+  positiveNewsCategories: readonly string[];
+  maxStars: number;
+}
+
 export const CATALYST_CONFIG = {
   // How far ahead an upcoming earnings event counts as a "catalyst" event.
   // Larger than EARNINGS_CONFIG.imminenceCalendarDays (which is the *risk*
@@ -463,6 +509,14 @@ export const LOG_PERSISTENCE_CONFIG = {
 // ─── Earnings calendar (Phase 3) ───
 // Suppress / downgrade buy signals when an earnings announcement is imminent.
 // Holding through earnings is a coin flip; the app should remove the temptation.
+export interface EarningsConfig {
+  imminenceCalendarDays: number;
+  scoreAdjustment: number;
+  applyRecommendationDowngrade: boolean;
+  refreshIntervalMs: number;
+  fetchHorizonDays: number;
+}
+
 export const EARNINGS_CONFIG = {
   // Threshold: an earnings event ≤ this many *calendar* days away counts as
   // "imminent". 7 calendar days ≈ 5 trading days, which matches the plan

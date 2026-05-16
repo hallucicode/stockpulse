@@ -17,7 +17,7 @@ describe("db", () => {
   });
 
   it("creates a PrismaClient with warn/error log in development", async () => {
-    process.env.NODE_ENV = "development";
+    vi.stubEnv("NODE_ENV", "development");
     const mod = await import("@/lib/db");
     expect(mod.db).toBeDefined();
     expect((mod.db as any).__opts.log).toEqual(["warn", "error"]);
@@ -26,7 +26,7 @@ describe("db", () => {
   });
 
   it("creates a PrismaClient with error-only log in production", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     delete (globalThis as any).prisma;
     const mod = await import("@/lib/db");
     expect((mod.db as any).__opts.log).toEqual(["error"]);
@@ -35,7 +35,7 @@ describe("db", () => {
   });
 
   it("reuses cached PrismaClient on subsequent imports", async () => {
-    process.env.NODE_ENV = "development";
+    vi.stubEnv("NODE_ENV", "development");
     const cached = { __reused: true };
     (globalThis as any).prisma = cached;
     const mod = await import("@/lib/db");

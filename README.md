@@ -1,5 +1,7 @@
 # StockPulse — Volatile Stock Trading Assistant
 
+[![CI](https://github.com/hallucicode/stockpulse/actions/workflows/ci.yml/badge.svg)](https://github.com/hallucicode/stockpulse/actions/workflows/ci.yml)
+
 A personal app for catching tops and bottoms on volatile stocks using technical analysis signals. Built with Next.js, Prisma (SQLite), and Yahoo Finance.
 
 ## What It Does
