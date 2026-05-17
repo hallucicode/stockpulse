@@ -20,13 +20,10 @@ import {
   evaluateOptionsActivity,
   type OptionsChainSlice,
 } from "./options";
+import { serialThrottle, type ThrottleStepResult } from "./throttle";
 import type { OptionsActivity } from "@/types";
 
 const yf = new YahooFinance();
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Fetch the nearest-expiry chain slice for a symbol via yahoo-finance2.
@@ -164,51 +161,44 @@ export async function refreshAllOptions(): Promise<{
   errored: number;
   duration: number;
 }> {
-  const start = Date.now();
   const watchlist = await db.watchlistStock.findMany({
     orderBy: { addedAt: "asc" },
   });
   log.info("options", "refresh.start", { count: watchlist.length });
 
-  let succeeded = 0;
-  let skipped = 0;
-  let errored = 0;
-
-  for (let i = 0; i < watchlist.length; i++) {
-    const stock = watchlist[i];
-    try {
-      const activity = await refreshOptionsForSymbol(stock.symbol);
-      if (activity === null) skipped++;
-      else succeeded++;
-    } catch (err) {
-      log.warn("options", "refresh.symbol-error", { symbol: stock.symbol, error: err });
-      errored++;
-    }
-
-    const processed = i + 1;
-    if (processed % OPTIONS_CONFIG.progressLogEveryN === 0) {
-      log.info("options", "refresh.progress", {
-        processed,
-        total: watchlist.length,
-        succeeded,
-        skipped,
-        errored,
-      });
-    }
-    if (i < watchlist.length - 1) {
-      await sleep(OPTIONS_CONFIG.requestSpacingMs);
-    }
-  }
-
-  const duration = Date.now() - start;
-  log.info("options", "refresh.done", {
-    succeeded,
-    skipped,
-    errored,
-    total: watchlist.length,
-    durationMs: duration,
+  const summary = await serialThrottle({
+    items: watchlist,
+    spacingMs: OPTIONS_CONFIG.requestSpacingMs,
+    progressEveryN: OPTIONS_CONFIG.progressLogEveryN,
+    onProgress: (p) => log.info("options", "refresh.progress", p),
+    run: async (stock): Promise<ThrottleStepResult> => {
+      try {
+        const activity = await refreshOptionsForSymbol(stock.symbol);
+        return activity === null ? { kind: "skipped" } : { kind: "ok" };
+      } catch (err) {
+        log.warn("options", "refresh.symbol-error", {
+          symbol: stock.symbol,
+          error: err,
+        });
+        return { kind: "error" };
+      }
+    },
   });
-  return { total: watchlist.length, succeeded, skipped, errored, duration };
+
+  log.info("options", "refresh.done", {
+    succeeded: summary.succeeded,
+    skipped: summary.skipped,
+    errored: summary.errored,
+    total: summary.total,
+    durationMs: summary.durationMs,
+  });
+  return {
+    total: summary.total,
+    succeeded: summary.succeeded,
+    skipped: summary.skipped,
+    errored: summary.errored,
+    duration: summary.durationMs,
+  };
 }
 
 /**

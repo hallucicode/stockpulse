@@ -20,9 +20,9 @@
 import { db } from "./db";
 import { log } from "./logger";
 import { FUNDAMENTALS_CONFIG } from "./config";
+import { finnhubFetch, getFinnhubKey } from "./finnhub";
+import { serialThrottle, type ThrottleStepResult } from "./throttle";
 import type { Fundamentals } from "@/types";
-
-const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
 // Finnhub `/stock/metric?metric=all` returns a `metric` object with many
 // fields; we only read what we need. Field names from Finnhub docs.
@@ -34,11 +34,6 @@ type FetchResult =
   | { status: "ok"; data: Fundamentals }
   | { status: "rate_limited" }
   | { status: "error" };
-
-function getApiKey(): string | undefined {
-  const k = process.env.FINNHUB_API_KEY;
-  return k && k.length > 0 ? k : undefined;
-}
 
 function pickNumber(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -71,31 +66,25 @@ export function extractFundamentals(
 }
 
 async function fetchFundamentalsForSymbol(
-  symbol: string,
-  apiKey: string
+  symbol: string
 ): Promise<FetchResult> {
-  const url = `${FINNHUB_BASE}/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all&token=${apiKey}`;
-  let res: Response;
-  try {
-    res = await fetch(url);
-  } catch (err) {
-    log.warn("fundamentals", "fetch.network-error", { symbol, error: err });
-    return { status: "error" };
+  const result = await finnhubFetch<FinnhubMetricResponse>(
+    "/stock/metric",
+    { symbol, metric: "all" }
+  );
+  switch (result.status) {
+    case "no_key":
+      log.warn("fundamentals", "fetch.no-key-mid-loop", { symbol });
+      return { status: "error" };
+    case "rate_limited":
+      log.warn("fundamentals", "fetch.rate-limited", { symbol });
+      return { status: "rate_limited" };
+    case "error":
+      log.warn("fundamentals", "fetch.error", { symbol, error: result.error });
+      return { status: "error" };
+    case "ok":
+      return { status: "ok", data: extractFundamentals(result.data) };
   }
-  if (res.status === 429) {
-    log.warn("fundamentals", "fetch.rate-limited", { symbol });
-    return { status: "rate_limited" };
-  }
-  if (!res.ok) {
-    log.warn("fundamentals", "fetch.http-error", {
-      symbol,
-      status: res.status,
-      statusText: res.statusText,
-    });
-    return { status: "error" };
-  }
-  const data = (await res.json()) as FinnhubMetricResponse;
-  return { status: "ok", data: extractFundamentals(data) };
 }
 
 async function persistFundamentals(
@@ -107,10 +96,6 @@ async function persistFundamentals(
     update: { ...f, fetchedAt: new Date() },
     create: { symbol, ...f },
   });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -125,9 +110,7 @@ export async function refreshAllFundamentals(): Promise<{
   errored: number;
   duration: number;
 }> {
-  const start = Date.now();
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  if (!getFinnhubKey()) {
     log.info("fundamentals", "refresh.skip.no-key");
     return {
       total: 0,
@@ -143,60 +126,49 @@ export async function refreshAllFundamentals(): Promise<{
   });
   log.info("fundamentals", "refresh.start", { count: watchlist.length });
 
-  let succeeded = 0;
-  let rateLimited = 0;
-  let errored = 0;
-
-  for (let i = 0; i < watchlist.length; i++) {
-    const stock = watchlist[i];
-    const result = await fetchFundamentalsForSymbol(stock.symbol, apiKey);
-
-    if (result.status === "ok") {
+  const summary = await serialThrottle({
+    items: watchlist,
+    spacingMs: FUNDAMENTALS_CONFIG.requestSpacingMs,
+    rateLimitBackoffMs: FUNDAMENTALS_CONFIG.rateLimitBackoffMs,
+    progressEveryN: FUNDAMENTALS_CONFIG.progressLogEveryN,
+    onProgress: (p) => log.info("fundamentals", "refresh.progress", p),
+    run: async (stock): Promise<ThrottleStepResult> => {
+      const result = await fetchFundamentalsForSymbol(stock.symbol);
+      if (result.status === "rate_limited") {
+        log.warn("fundamentals", "rate-limit.backoff", {
+          symbol: stock.symbol,
+          backoffMs: FUNDAMENTALS_CONFIG.rateLimitBackoffMs,
+        });
+        return { kind: "rate_limited" };
+      }
+      if (result.status === "error") return { kind: "error" };
       try {
         await persistFundamentals(stock.symbol, result.data);
-        succeeded++;
+        return { kind: "ok" };
       } catch (err) {
         log.warn("fundamentals", "persist.failure", {
           symbol: stock.symbol,
           error: err,
         });
-        errored++;
+        return { kind: "error" };
       }
-    } else if (result.status === "rate_limited") {
-      rateLimited++;
-      log.warn("fundamentals", "rate-limit.backoff", {
-        symbol: stock.symbol,
-        backoffMs: FUNDAMENTALS_CONFIG.rateLimitBackoffMs,
-      });
-      await sleep(FUNDAMENTALS_CONFIG.rateLimitBackoffMs);
-    } else {
-      errored++;
-    }
-
-    const processed = i + 1;
-    if (processed % FUNDAMENTALS_CONFIG.progressLogEveryN === 0) {
-      log.info("fundamentals", "refresh.progress", {
-        processed,
-        total: watchlist.length,
-        succeeded,
-        rateLimited,
-        errored,
-      });
-    }
-    if (i < watchlist.length - 1) {
-      await sleep(FUNDAMENTALS_CONFIG.requestSpacingMs);
-    }
-  }
-
-  const duration = Date.now() - start;
-  log.info("fundamentals", "refresh.done", {
-    succeeded,
-    rateLimited,
-    errored,
-    total: watchlist.length,
-    durationMs: duration,
+    },
   });
-  return { total: watchlist.length, succeeded, rateLimited, errored, duration };
+
+  log.info("fundamentals", "refresh.done", {
+    succeeded: summary.succeeded,
+    rateLimited: summary.rateLimited,
+    errored: summary.errored,
+    total: summary.total,
+    durationMs: summary.durationMs,
+  });
+  return {
+    total: summary.total,
+    succeeded: summary.succeeded,
+    rateLimited: summary.rateLimited,
+    errored: summary.errored,
+    duration: summary.durationMs,
+  };
 }
 
 /**

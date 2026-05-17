@@ -66,6 +66,8 @@ import {
 } from "./options-source";
 import { applyOptionsAdjustment } from "./options";
 import { SECTOR_ROTATION_CONFIG, OPTIONS_CONFIG } from "./config";
+import { registerCron, startAll, stopAll } from "./scheduler";
+import { sleep } from "./throttle";
 import type { Regime, SectorRotationInfo } from "@/types";
 import { pruneOldLogs } from "./log-persistence";
 
@@ -74,10 +76,6 @@ const yf = new YahooFinance();
 let isRunning = false;
 let lastRunAt: Date | null = null;
 let lastCompletedAt: Date | null = null;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function persistQualityIssues(
   symbol: string,
@@ -428,206 +426,93 @@ function mapQuoteToSector(raw: string): string {
   return "Other";
 }
 
-let intervalId: ReturnType<typeof setInterval> | null = null;
-let discoveryId: ReturnType<typeof setInterval> | null = null;
-let earningsId: ReturnType<typeof setInterval> | null = null;
-let newsId: ReturnType<typeof setInterval> | null = null;
-let fundamentalsId: ReturnType<typeof setInterval> | null = null;
-let insidersId: ReturnType<typeof setInterval> | null = null;
-let analystsId: ReturnType<typeof setInterval> | null = null;
-let regimeId: ReturnType<typeof setInterval> | null = null;
-let sectorRotationId: ReturnType<typeof setInterval> | null = null;
-let optionsId: ReturnType<typeof setInterval> | null = null;
-let pruneId: ReturnType<typeof setInterval> | null = null;
+/**
+ * Build the cron table that owns every recurring task in the app. One
+ * `registerCron` call per task — the scheduler handles armed-state,
+ * lifecycle, error catching, and overlap protection. Adding a new cron
+ * is a one-line change here (was: a `let xId`, a `safeX()`, a
+ * `setInterval`, and a cleanup block — four touch points).
+ */
+function registerCrons(): void {
+  const { refreshIntervalMs, discoveryIntervalMs } = FETCHER_CONFIG;
 
-function safeRefresh() {
-  refreshAllStocks().catch((err) =>
-    log.error("fetcher", "refresh.unhandled", { error: err })
-  );
+  registerCron({
+    name: "fetcher.refresh",
+    intervalMs: refreshIntervalMs,
+    run: () => refreshAllStocks(),
+  });
+  registerCron({
+    name: "discovery.refresh",
+    intervalMs: discoveryIntervalMs,
+    run: () => discoverTrendingStocks(),
+  });
+  registerCron({
+    name: "earnings.refresh",
+    intervalMs: EARNINGS_CONFIG.refreshIntervalMs,
+    run: () => refreshEarningsCalendar(),
+  });
+  registerCron({
+    name: "news.refresh",
+    intervalMs: NEWS_CONFIG.refreshIntervalMs,
+    run: () => refreshNewsForWatchlist(),
+  });
+  registerCron({
+    name: "fundamentals.refresh",
+    intervalMs: FUNDAMENTALS_CONFIG.refreshIntervalMs,
+    run: () => refreshAllFundamentals(),
+  });
+  registerCron({
+    name: "insiders.refresh",
+    intervalMs: INSIDERS_CONFIG.refreshIntervalMs,
+    run: () => refreshAllInsiders(),
+  });
+  registerCron({
+    name: "analysts.refresh",
+    intervalMs: ANALYSTS_CONFIG.refreshIntervalMs,
+    run: () => refreshAllAnalysts(),
+  });
+  registerCron({
+    name: "regime.refresh",
+    intervalMs: REGIME_CONFIG.refreshIntervalMs,
+    run: () => refreshRegimeSnapshot(),
+  });
+  registerCron({
+    name: "sector-rotation.refresh",
+    intervalMs: SECTOR_ROTATION_CONFIG.refreshIntervalMs,
+    run: () => refreshSectorRotation(),
+  });
+  registerCron({
+    name: "options.refresh",
+    intervalMs: OPTIONS_CONFIG.refreshIntervalMs,
+    run: () => refreshAllOptions(),
+  });
+  registerCron({
+    name: "log-prune",
+    intervalMs: LOG_PERSISTENCE_CONFIG.pruneIntervalMs,
+    run: async () => {
+      const deleted = await pruneOldLogs();
+      if (deleted > 0) log.info("log-prune", "done", { deleted });
+    },
+  });
 }
 
-function safeDiscover() {
-  discoverTrendingStocks().catch((err) =>
-    log.error("discovery", "unhandled", { error: err })
-  );
-}
-
-function safeEarningsRefresh() {
-  refreshEarningsCalendar().catch((err) =>
-    log.error("earnings", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeNewsRefresh() {
-  refreshNewsForWatchlist().catch((err) =>
-    log.error("news", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeFundamentalsRefresh() {
-  refreshAllFundamentals().catch((err) =>
-    log.error("fundamentals", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeInsidersRefresh() {
-  refreshAllInsiders().catch((err) =>
-    log.error("insiders", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeAnalystsRefresh() {
-  refreshAllAnalysts().catch((err) =>
-    log.error("analysts", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeRegimeRefresh() {
-  refreshRegimeSnapshot().catch((err) =>
-    log.error("regime", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeSectorRotationRefresh() {
-  refreshSectorRotation().catch((err) =>
-    log.error("sector-rotation", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeOptionsRefresh() {
-  refreshAllOptions().catch((err) =>
-    log.error("options", "refresh.unhandled", { error: err })
-  );
-}
-
-function safeLogPrune() {
-  pruneOldLogs()
-    .then((count) => {
-      if (count > 0) log.info("log-prune", "done", { deleted: count });
-    })
-    .catch((err) => log.error("log-prune", "error", { error: err }));
-}
+let cronsRegistered = false;
 
 export function startBackgroundFetcher() {
-  if (intervalId) return;
-
-  const { refreshIntervalMs, discoveryIntervalMs } = FETCHER_CONFIG;
+  if (!cronsRegistered) {
+    registerCrons();
+    cronsRegistered = true;
+  }
   log.info("fetcher", "start", {
-    refreshIntervalMs,
-    discoveryIntervalMs,
+    refreshIntervalMs: FETCHER_CONFIG.refreshIntervalMs,
+    discoveryIntervalMs: FETCHER_CONFIG.discoveryIntervalMs,
     earningsRefreshMs: EARNINGS_CONFIG.refreshIntervalMs,
   });
-
-  // Run immediately on start
-  safeRefresh();
-
-  // Then every refreshIntervalMs
-  intervalId = setInterval(safeRefresh, refreshIntervalMs);
-
-  // Auto-discovery every discoveryIntervalMs
-  safeDiscover();
-  discoveryId = setInterval(safeDiscover, discoveryIntervalMs);
-
-  // Earnings calendar refresh — daily by default. No-ops cleanly when
-  // FINNHUB_API_KEY is unset (see earnings-source.ts).
-  safeEarningsRefresh();
-  earningsId = setInterval(safeEarningsRefresh, EARNINGS_CONFIG.refreshIntervalMs);
-
-  // News calendar refresh — daily. Same graceful fallback as earnings when
-  // FINNHUB_API_KEY is unset (logs a single skip.no-key info).
-  safeNewsRefresh();
-  newsId = setInterval(safeNewsRefresh, NEWS_CONFIG.refreshIntervalMs);
-
-  // Fundamentals refresh — weekly cadence, same Finnhub key.
-  safeFundamentalsRefresh();
-  fundamentalsId = setInterval(
-    safeFundamentalsRefresh,
-    FUNDAMENTALS_CONFIG.refreshIntervalMs
-  );
-
-  // Insider transactions + analyst actions — both daily, same Finnhub key.
-  safeInsidersRefresh();
-  insidersId = setInterval(
-    safeInsidersRefresh,
-    INSIDERS_CONFIG.refreshIntervalMs
-  );
-
-  safeAnalystsRefresh();
-  analystsId = setInterval(
-    safeAnalystsRefresh,
-    ANALYSTS_CONFIG.refreshIntervalMs
-  );
-
-  // Market regime — daily snapshot of SPY/VIX classification. Read by every
-  // stock-fetcher cycle to weight signals (Phase 6).
-  safeRegimeRefresh();
-  regimeId = setInterval(safeRegimeRefresh, REGIME_CONFIG.refreshIntervalMs);
-
-  // Sector rotation — daily classification of each sector ETF. Stocks in
-  // a "turning_up" sector get a +1 catalyst via the Phase 7 aggregator.
-  safeSectorRotationRefresh();
-  sectorRotationId = setInterval(
-    safeSectorRotationRefresh,
-    SECTOR_ROTATION_CONFIG.refreshIntervalMs
-  );
-
-  // Options snapshot — daily IV / put-call / unusual-flow per watchlist
-  // symbol. Yahoo data is free; serial 1.1s spacing keeps us under burst
-  // limits on a 600-stock universe (~11 min total).
-  safeOptionsRefresh();
-  optionsId = setInterval(safeOptionsRefresh, OPTIONS_CONFIG.refreshIntervalMs);
-
-  // Periodic LogEntry prune so the audit table doesn't grow unbounded.
-  // Retention + interval come from LOG_PERSISTENCE_CONFIG (default: 7 days).
-  safeLogPrune();
-  pruneId = setInterval(safeLogPrune, LOG_PERSISTENCE_CONFIG.pruneIntervalMs);
+  startAll();
 }
 
 export function stopBackgroundFetcher() {
-  if (intervalId) {
-    clearInterval(intervalId);
-    intervalId = null;
-  }
-  if (discoveryId) {
-    clearInterval(discoveryId);
-    discoveryId = null;
-  }
-  if (earningsId) {
-    clearInterval(earningsId);
-    earningsId = null;
-  }
-  if (newsId) {
-    clearInterval(newsId);
-    newsId = null;
-  }
-  if (fundamentalsId) {
-    clearInterval(fundamentalsId);
-    fundamentalsId = null;
-  }
-  if (insidersId) {
-    clearInterval(insidersId);
-    insidersId = null;
-  }
-  if (analystsId) {
-    clearInterval(analystsId);
-    analystsId = null;
-  }
-  if (regimeId) {
-    clearInterval(regimeId);
-    regimeId = null;
-  }
-  if (sectorRotationId) {
-    clearInterval(sectorRotationId);
-    sectorRotationId = null;
-  }
-  if (optionsId) {
-    clearInterval(optionsId);
-    optionsId = null;
-  }
-  if (pruneId) {
-    clearInterval(pruneId);
-    pruneId = null;
-  }
+  stopAll();
   log.info("fetcher", "stop");
 }
 
