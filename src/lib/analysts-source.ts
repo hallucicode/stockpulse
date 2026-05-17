@@ -18,6 +18,7 @@ import YahooFinance from "yahoo-finance2";
 import { db } from "./db";
 import { log } from "./logger";
 import { ANALYSTS_CONFIG } from "./config";
+import { serialThrottle, type ThrottleStepResult } from "./throttle";
 import type { AnalystEvent } from "./analysts";
 
 const yf = new YahooFinance();
@@ -112,64 +113,50 @@ async function persistAnalysts(
   });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export async function refreshAllAnalysts(): Promise<{
   total: number;
   succeeded: number;
   errored: number;
   duration: number;
 }> {
-  const start = Date.now();
   const watchlist = await db.watchlistStock.findMany({
     orderBy: { addedAt: "asc" },
   });
   log.info("analysts", "refresh.start", { count: watchlist.length });
 
-  let succeeded = 0;
-  let errored = 0;
-
-  for (let i = 0; i < watchlist.length; i++) {
-    const stock = watchlist[i];
-    const result = await fetchAnalystsForSymbol(stock.symbol);
-    if (result.status === "ok") {
+  const summary = await serialThrottle({
+    items: watchlist,
+    spacingMs: ANALYSTS_CONFIG.requestSpacingMs,
+    progressEveryN: ANALYSTS_CONFIG.progressLogEveryN,
+    onProgress: (p) => log.info("analysts", "refresh.progress", p),
+    run: async (stock): Promise<ThrottleStepResult> => {
+      const result = await fetchAnalystsForSymbol(stock.symbol);
+      if (result.status === "error") return { kind: "error" };
       try {
         await persistAnalysts(stock.symbol, result.rows);
-        succeeded++;
+        return { kind: "ok" };
       } catch (err) {
         log.warn("analysts", "persist.failure", {
           symbol: stock.symbol,
           error: err,
         });
-        errored++;
+        return { kind: "error" };
       }
-    } else {
-      errored++;
-    }
-    const processed = i + 1;
-    if (processed % ANALYSTS_CONFIG.progressLogEveryN === 0) {
-      log.info("analysts", "refresh.progress", {
-        processed,
-        total: watchlist.length,
-        succeeded,
-        errored,
-      });
-    }
-    if (i < watchlist.length - 1) {
-      await sleep(ANALYSTS_CONFIG.requestSpacingMs);
-    }
-  }
-
-  const duration = Date.now() - start;
-  log.info("analysts", "refresh.done", {
-    succeeded,
-    errored,
-    total: watchlist.length,
-    durationMs: duration,
+    },
   });
-  return { total: watchlist.length, succeeded, errored, duration };
+
+  log.info("analysts", "refresh.done", {
+    succeeded: summary.succeeded,
+    errored: summary.errored,
+    total: summary.total,
+    durationMs: summary.durationMs,
+  });
+  return {
+    total: summary.total,
+    succeeded: summary.succeeded,
+    errored: summary.errored,
+    duration: summary.durationMs,
+  };
 }
 
 export async function getRecentAnalystActionsForSymbol(

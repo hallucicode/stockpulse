@@ -17,9 +17,8 @@ import { db } from "./db";
 import { log } from "./logger";
 import { EARNINGS_CONFIG } from "./config";
 import { getNextEarnings } from "./earnings";
+import { finnhubFetch, getFinnhubKey } from "./finnhub";
 import type { EarningsInfo } from "@/types";
-
-const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
 interface FinnhubEarningsRow {
   symbol: string;
@@ -32,11 +31,6 @@ interface FinnhubEarningsResponse {
   earningsCalendar?: FinnhubEarningsRow[];
 }
 
-function getApiKey(): string | undefined {
-  const k = process.env.FINNHUB_API_KEY;
-  return k && k.length > 0 ? k : undefined;
-}
-
 function isoDay(d: Date): string {
   return d.toISOString().split("T")[0];
 }
@@ -44,29 +38,32 @@ function isoDay(d: Date): string {
 /**
  * Fetch the calendar between two dates (inclusive). Returns rows from
  * Finnhub or an empty array on missing key / network failure.
+ *
+ * Uses the shared `finnhubFetch` envelope (Phase 10) so the no-key,
+ * network-error and 429 paths are handled centrally — caller just sees
+ * an empty array on any non-ok outcome.
  */
 export async function fetchEarningsCalendar(
   from: Date,
   to: Date
 ): Promise<FinnhubEarningsRow[]> {
-  const key = getApiKey();
-  if (!key) {
+  const result = await finnhubFetch<FinnhubEarningsResponse>(
+    "/calendar/earnings",
+    { from: isoDay(from), to: isoDay(to) }
+  );
+  if (result.status === "no_key") {
     log.info("earnings", "skip.no-key");
     return [];
   }
-  const url = `${FINNHUB_BASE}/calendar/earnings?from=${isoDay(from)}&to=${isoDay(to)}&token=${key}`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      log.warn("earnings", "fetch.http-error", { status: res.status });
-      return [];
-    }
-    const data = (await res.json()) as FinnhubEarningsResponse;
-    return data.earningsCalendar ?? [];
-  } catch (err) {
-    log.warn("earnings", "fetch.network-error", { error: err });
+  if (result.status === "rate_limited") {
+    log.warn("earnings", "fetch.rate-limited");
     return [];
   }
+  if (result.status === "error") {
+    log.warn("earnings", "fetch.error", { error: result.error });
+    return [];
+  }
+  return result.data.earningsCalendar ?? [];
 }
 
 /**
@@ -77,8 +74,7 @@ export async function fetchEarningsCalendar(
  * Returns the number of rows upserted (0 when no API key).
  */
 export async function refreshEarningsCalendar(): Promise<number> {
-  const key = getApiKey();
-  if (!key) {
+  if (!getFinnhubKey()) {
     log.info("earnings", "refresh.skip.no-key");
     return 0;
   }

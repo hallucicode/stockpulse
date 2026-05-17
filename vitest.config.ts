@@ -9,6 +9,10 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./test/setup.ts"],
     globals: true,
+    // Don't pick up Claude Code worktree copies (each one ships duplicate
+    // test files; without this the suite count triples and noise hides
+    // real failures).
+    exclude: ["node_modules", ".next", "coverage", ".claude/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "html", "json-summary"],

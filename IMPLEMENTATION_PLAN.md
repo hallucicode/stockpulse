@@ -75,6 +75,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 8 — Options market signals
 - Phase 9 — Continuous integration
 - Phase 9.5 — ESLint setup
+- Phase 10 — Scheduler + rate-limit refactor
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -91,31 +92,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 ---
 
 
-## Phase 10 — Scheduler + rate-limit refactor *(tech debt, overdue)*
-
-**Why now:** `background-fetcher.ts` is now 8 `setInterval` calls with 8 IDs to clear in `stopBackgroundFetcher`. Every source module (news, fundamentals, insiders, analysts, options, sector-rotation) has its own copy of `await sleep(1100)` between requests. Per CLAUDE.md "the third copy is a bug" — we're at the fifth.
-
-### Tasks
-1. **`src/lib/scheduler.ts`** — one module that owns all crons:
-   - `registerCron({ name, intervalMs, run })`
-   - `startAll()` / `stopAll()`
-   - Single map of `name → { intervalId, lastStart, lastDone }` for observability.
-   - Replace the 8 ad-hoc `setInterval` calls in `background-fetcher.ts` with `registerCron(...)` calls.
-2. **`src/lib/throttle.ts`** — one shared rate-limit helper:
-   - `serialThrottle({ items, spacingMs, run, onProgress })` — serial iteration with per-item spacing, progress callback.
-   - `rateLimitAware(fetcher, { backoffMs })` — handle 429s with exponential backoff.
-   - Replace each source module's hand-rolled `for (;;) { await fetch; await sleep }` loop with one of these.
-3. **Shared per-API key wrapper.** All Finnhub calls go through one function that loads `FINNHUB_API_KEY`, applies the throttle, and returns `{ status: "ok" | "rate_limited" | "no_key" | "error" }`. Today each source re-implements that envelope.
-4. Update all existing crons + sources to use the new modules. No behaviour change — refactor only.
-
-### Tests
-- Scheduler: registers/unregisters cleanly, doesn't double-start, runs immediately + at interval.
-- Throttle: serial iteration, spacing actually applied, 429 backoff fires.
-- Per-source tests stay valid (behaviour unchanged).
-
-### Effort: **2 days**.
-
----
 
 ## Phase 11 — Audit log foundation *(tech debt, blocks Phase 15)*
 
@@ -461,24 +437,23 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~37.5 days of build time across Phases 0–9.5. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~39.5 days of build time across Phases 0–10. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 10 | Scheduler + rate-limit refactor | 2 d | 2 d |
-| 11 | Audit log foundation | 1.5 d | 3.5 d |
-| 12 | FDA / drug-trial catalyst | 1.5 d | 5 d |
-| 13 | Tax-aware decisions | 4 d | 9 d |
-| 14 | Trade card UI | 3 d | 12 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 22 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 26 d |
-| 17 | Postgres migration | 1.5 d | 27.5 d |
-| 18 | Decay monitoring | 3 d | 30.5 d |
-| 19 | Alternative data | 5 d | 35.5 d |
-| 20 | Portfolio optimization | 5 d | 40.5 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 55.5 d |
+| 11 | Audit log foundation | 1.5 d | 1.5 d |
+| 12 | FDA / drug-trial catalyst | 1.5 d | 3 d |
+| 13 | Tax-aware decisions | 4 d | 7 d |
+| 14 | Trade card UI | 3 d | 10 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 20 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 24 d |
+| 17 | Postgres migration | 1.5 d | 25.5 d |
+| 18 | Decay monitoring | 3 d | 28.5 d |
+| 19 | Alternative data | 5 d | 33.5 d |
+| 20 | Portfolio optimization | 5 d | 38.5 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 53.5 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

@@ -12,9 +12,9 @@
 import { db } from "./db";
 import { log } from "./logger";
 import { INSIDERS_CONFIG } from "./config";
+import { finnhubFetch, getFinnhubKey } from "./finnhub";
+import { serialThrottle, type ThrottleStepResult } from "./throttle";
 import type { InsiderTxn } from "./insiders";
-
-const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
 interface FinnhubInsiderRow {
   name: string;
@@ -36,51 +36,35 @@ type FetchResult =
   | { status: "rate_limited" }
   | { status: "error" };
 
-function getApiKey(): string | undefined {
-  const k = process.env.FINNHUB_API_KEY;
-  return k && k.length > 0 ? k : undefined;
-}
-
 function isoDay(d: Date): string {
   return d.toISOString().split("T")[0];
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchInsidersForSymbol(
-  symbol: string,
-  apiKey: string
-): Promise<FetchResult> {
+async function fetchInsidersForSymbol(symbol: string): Promise<FetchResult> {
   const to = new Date();
   const from = new Date(
     to.getTime() - INSIDERS_CONFIG.lookbackDays * 86_400_000
   );
-  const url =
-    `${FINNHUB_BASE}/stock/insider-transactions` +
-    `?symbol=${encodeURIComponent(symbol)}&from=${isoDay(from)}&to=${isoDay(to)}&token=${apiKey}`;
-  let res: Response;
-  try {
-    res = await fetch(url);
-  } catch (err) {
-    log.warn("insiders", "fetch.network-error", { symbol, error: err });
-    return { status: "error" };
+  const result = await finnhubFetch<FinnhubInsiderResponse>(
+    "/stock/insider-transactions",
+    { symbol, from: isoDay(from), to: isoDay(to) }
+  );
+  switch (result.status) {
+    case "no_key":
+      log.warn("insiders", "fetch.no-key-mid-loop", { symbol });
+      return { status: "error" };
+    case "rate_limited":
+      log.warn("insiders", "fetch.rate-limited", { symbol });
+      return { status: "rate_limited" };
+    case "error":
+      log.warn("insiders", "fetch.error", { symbol, error: result.error });
+      return { status: "error" };
+    case "ok":
+      return {
+        status: "ok",
+        rows: Array.isArray(result.data?.data) ? result.data.data : [],
+      };
   }
-  if (res.status === 429) {
-    log.warn("insiders", "fetch.rate-limited", { symbol });
-    return { status: "rate_limited" };
-  }
-  if (!res.ok) {
-    log.warn("insiders", "fetch.http-error", {
-      symbol,
-      status: res.status,
-      statusText: res.statusText,
-    });
-    return { status: "error" };
-  }
-  const data = (await res.json()) as FinnhubInsiderResponse;
-  return { status: "ok", rows: Array.isArray(data?.data) ? data.data : [] };
 }
 
 async function persistInsiders(
@@ -143,9 +127,7 @@ export async function refreshAllInsiders(): Promise<{
   errored: number;
   duration: number;
 }> {
-  const start = Date.now();
-  const apiKey = getApiKey();
-  if (!apiKey) {
+  if (!getFinnhubKey()) {
     log.info("insiders", "refresh.skip.no-key");
     return {
       total: 0,
@@ -160,51 +142,43 @@ export async function refreshAllInsiders(): Promise<{
   });
   log.info("insiders", "refresh.start", { count: watchlist.length });
 
-  let succeeded = 0;
-  let rateLimited = 0;
-  let errored = 0;
-
-  for (let i = 0; i < watchlist.length; i++) {
-    const stock = watchlist[i];
-    const result = await fetchInsidersForSymbol(stock.symbol, apiKey);
-    if (result.status === "ok") {
+  const summary = await serialThrottle({
+    items: watchlist,
+    spacingMs: INSIDERS_CONFIG.requestSpacingMs,
+    rateLimitBackoffMs: INSIDERS_CONFIG.rateLimitBackoffMs,
+    progressEveryN: INSIDERS_CONFIG.progressLogEveryN,
+    onProgress: (p) => log.info("insiders", "refresh.progress", p),
+    run: async (stock): Promise<ThrottleStepResult> => {
+      const result = await fetchInsidersForSymbol(stock.symbol);
+      if (result.status === "rate_limited") return { kind: "rate_limited" };
+      if (result.status === "error") return { kind: "error" };
       try {
         await persistInsiders(stock.symbol, result.rows);
-        succeeded++;
+        return { kind: "ok" };
       } catch (err) {
-        log.warn("insiders", "persist.failure", { symbol: stock.symbol, error: err });
-        errored++;
+        log.warn("insiders", "persist.failure", {
+          symbol: stock.symbol,
+          error: err,
+        });
+        return { kind: "error" };
       }
-    } else if (result.status === "rate_limited") {
-      rateLimited++;
-      await sleep(INSIDERS_CONFIG.rateLimitBackoffMs);
-    } else {
-      errored++;
-    }
-    const processed = i + 1;
-    if (processed % INSIDERS_CONFIG.progressLogEveryN === 0) {
-      log.info("insiders", "refresh.progress", {
-        processed,
-        total: watchlist.length,
-        succeeded,
-        rateLimited,
-        errored,
-      });
-    }
-    if (i < watchlist.length - 1) {
-      await sleep(INSIDERS_CONFIG.requestSpacingMs);
-    }
-  }
-
-  const duration = Date.now() - start;
-  log.info("insiders", "refresh.done", {
-    succeeded,
-    rateLimited,
-    errored,
-    total: watchlist.length,
-    durationMs: duration,
+    },
   });
-  return { total: watchlist.length, succeeded, rateLimited, errored, duration };
+
+  log.info("insiders", "refresh.done", {
+    succeeded: summary.succeeded,
+    rateLimited: summary.rateLimited,
+    errored: summary.errored,
+    total: summary.total,
+    durationMs: summary.durationMs,
+  });
+  return {
+    total: summary.total,
+    succeeded: summary.succeeded,
+    rateLimited: summary.rateLimited,
+    errored: summary.errored,
+    duration: summary.durationMs,
+  };
 }
 
 /**

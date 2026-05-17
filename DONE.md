@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 9.5 (~37.5 days of build time).
+**Done so far:** Phases 0 through 10 (~39.5 days of build time).
 
 ---
 
@@ -498,3 +498,48 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 - Stricter rules (e.g. `@typescript-eslint/no-explicit-any`, `import/order`) — would require a dedicated cleanup pass on existing `any` usage in tests. Not worth the disruption today; revisit when test-typing debt is on the agenda.
 
 ### Effort: **0.5 day** (faster than expected — only 1 lint error on existing code).
+
+---
+
+## Phase 10 — Scheduler + rate-limit refactor ✅ DONE
+
+**Why this had to happen:** before this phase, `background-fetcher.ts` had **11 ad-hoc `setInterval` calls** with 11 `let xId = null` variables and 11 cleanup blocks in `stopBackgroundFetcher`. Adding a 12th cron required touching all three places. Every Finnhub-backed source module (earnings / news / fundamentals / insiders) had its own copy of `getApiKey()` + `try { fetch } catch { 429 → backoff }` envelope. Every serial-throttled source module (news / fundamentals / insiders / analysts / options) had its own copy of `function sleep(ms)` + per-symbol `for (...) { await fetch; if (429) { backoff }; await sleep(spacing); }`. **5 copies** of sleep, **4 copies** of the Finnhub envelope, **11 copies** of the cron lifecycle — per CLAUDE.md "third copy is a bug" we were way past the line.
+
+**Shipped — three new shared modules:**
+- **`src/lib/scheduler.ts`** (97.84% / 88.88% coverage):
+  - `registerCron({ name, intervalMs, runOnStart?, run })` — registers a task; idempotent on `name`.
+  - `startAll()` / `stopAll()` — armed-once / cleared-all. Safe to call repeatedly.
+  - `getStatuses()` — per-task snapshot (lastStartedAt, lastCompletedAt, lastError, isRunning, isArmed) for `/logs` observability.
+  - Overlap protection: a tick that lands while the previous run is still in flight is skipped, not double-invoked.
+  - Per-task `try/catch` so an unhandled rejection in one cron never crashes the host. Errors land at `<name>:run.unhandled` with the original message preserved on the status record.
+- **`src/lib/throttle.ts`** (100% across the board):
+  - `sleep(ms)` — fake-timer aware. Single source of truth.
+  - `serialThrottle({ items, spacingMs, rateLimitBackoffMs?, onProgress?, progressEveryN?, run })` — owns the serial-iteration pattern. `run` returns a typed `ThrottleStepResult` (`ok | skipped | rate_limited | error`); the loop tallies outcomes, applies spacing, fires progress callbacks, and backs off on rate-limited steps.
+  - Per-item exception catching: a throwing `run` is counted as `error`, the loop continues.
+- **`src/lib/finnhub.ts`** (100% across the board):
+  - `getFinnhubKey()` — single point of `process.env.FINNHUB_API_KEY` access.
+  - `finnhubFetch<T>(path, params)` — wraps `fetch` with the no-key / network-error / 429 / non-2xx / JSON-parse error ladder. Returns `{ status: "ok" | "rate_limited" | "no_key" | "error", data?, error? }`.
+
+**Migrated:**
+- **`background-fetcher.ts`** — 11 `let xId`, 11 `safeX()` wrappers, 11 `setInterval` calls, and 11 cleanup blocks → one `registerCrons()` function with 11 `registerCron(...)` entries; `startBackgroundFetcher` is now `registerCrons() + startAll()`; `stopBackgroundFetcher` is now `stopAll()`. Net: **~150 lines deleted**, plus the local `function sleep` is gone.
+- **`earnings-source.ts`** → uses `finnhubFetch` + `getFinnhubKey`. Hand-rolled envelope (~35 lines) deleted.
+- **`news-source.ts`** → uses `finnhubFetch` + `serialThrottle`. Hand-rolled envelope + spacing loop (~70 lines) deleted.
+- **`fundamentals-source.ts`** → same pattern. ~50 lines deleted.
+- **`insiders-source.ts`** → same pattern. ~50 lines deleted.
+- **`analysts-source.ts`** (Yahoo, not Finnhub) → uses `serialThrottle`. Local `function sleep` + spacing loop deleted.
+- **`options-source.ts`** (Yahoo) → same. Local `function sleep` + spacing loop deleted.
+
+**Side-fix that came along:**
+- `vitest.config.ts` — added `exclude: ["node_modules", ".next", "coverage", ".claude/**"]` so the test runner doesn't pick up Claude Code worktree copies, which were tripling the test count on every run (1914 → 662 after the exclude).
+
+**Tests & coverage:**
+- **+36 new tests**: 16 scheduler (registration, start/stop idempotency, runOnStart variants, interval ticking, error catching, lastError reset on next success, overlap protection) + 9 throttle (sleep timing, outcome counts, spacing application, rate-limit backoff timing, progress callback cadence) + 11 finnhub (key handling, URL building, every status path).
+- **All 626 existing tests pass without modification** — the refactor is behavior-preserving by construction. New count: **662 tests** across **45 files**.
+- Coverage: **97.62 / 92.36 / 97.74 / 97.62** — all thresholds met (≥95 lines/funcs/stmts, ≥90 branches). New modules: scheduler 97.84/88.88, throttle + finnhub both 100/100.
+
+**Deferred:**
+- **Concurrency-limit beyond serial-throttle.** When Yahoo (which has no formal rate limit) starts to feel slow, the right next step is `concurrentThrottle({ items, limit, run })`. Not needed today.
+- **Smarter rate-limit handling** — exponential backoff after consecutive 429s rather than constant `rateLimitBackoffMs`. Worth doing if we ever hit Finnhub limits in production; current 60s backoff is empirically sufficient.
+- **Migration to a real queue library** (Bottleneck / p-queue) — the home-rolled `serialThrottle` is intentionally tiny. Reconsider when we need more than serial + backoff.
+
+### Effort: **2 days** (matched plan estimate).
