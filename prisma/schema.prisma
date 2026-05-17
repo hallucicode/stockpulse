@@ -243,6 +243,49 @@ model AnalystAction {
   @@index([symbol, publishedAt])
 }
 
+/// Permanent recommendation timeline (Phase 11).
+///
+/// Background-fetcher appends one row per (symbol, externally-observable
+/// change). `AnalysisCache` only holds the *current* analysis — when a
+/// stock moves from BUY → HOLD → BUY over a week, that transition is
+/// lost on overwrite. This table is the replay-able record Phase 15
+/// (backtest) needs to evaluate "did our signals predict outcomes?", and
+/// the same data Phase 18 (decay monitoring) compares live performance
+/// against backtest expectations.
+///
+/// Dedup: insert a row only when the canonical key changes — score,
+/// recommendation, regime, present-catalyst set, or quality-veto reason.
+/// `analysisHash` is SHA-1 of that canonical key (cheap "has anything
+/// changed since the last row for this symbol?" lookup).
+///
+/// `signalBreakdown` is a full JSON snapshot of the Analysis at the time
+/// of writing — minus the `signals[]` UI array. Forward-compatible: when
+/// new fields land in `Analysis` they appear in new rows automatically;
+/// when Phase 15 reads old rows the missing fields default to undefined.
+///
+/// Retention: rolling 3-year window (Phase 11), with paper-trade carve-out
+/// to be added in Phase 16 (don't prune symbols with open paper trades).
+model RecommendationLog {
+  id              String   @id @default(cuid())
+  symbol          String
+  timestamp       DateTime @default(now())
+  compositeScore  Int
+  recommendation  String   // "STRONG BUY" | "BUY" | "HOLD" | "SELL" | "STRONG SELL"
+  regime          String?  // null when regime cron hasn't run yet
+  /// SHA-1 of the canonical change-detection key (score, rec, regime,
+  /// catalysts.present, qualityVeto.reason). Used by maybeLogRecommendation
+  /// to skip writes when nothing externally-observable changed.
+  analysisHash    String
+  /// Full JSON.stringify(analysis) with the `signals[]` field stripped
+  /// (UI-derived; reconstructible from the rest). Read by Phase 15 to
+  /// replay a backtest against the exact analysis the system saw at the
+  /// time.
+  signalBreakdown String
+
+  @@index([symbol, timestamp])
+  @@index([timestamp])
+}
+
 /// Per-symbol fundamentals snapshot from Finnhub. Refreshed weekly — these
 /// numbers don't change daily, and the free tier rate-limits are tight.
 ///

@@ -76,6 +76,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 9 — Continuous integration
 - Phase 9.5 — ESLint setup
 - Phase 10 — Scheduler + rate-limit refactor
+- Phase 11 — Audit log foundation
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -93,40 +94,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 
 
-## Phase 11 — Audit log foundation *(tech debt, blocks Phase 15)*
-
-**Why now:** Phase 15 (backtest) needs the ground truth of "what did we recommend, when, with what score, in what regime?". Today, only the *current* analysis is persisted in `AnalysisCache` — historical recommendations are gone. The longer this waits, the less retrospective data we have when Phase 15 finally runs.
-
-### Tasks
-1. New Prisma model `RecommendationLog`:
-   ```prisma
-   model RecommendationLog {
-     id             String   @id @default(cuid())
-     symbol         String
-     timestamp      DateTime @default(now())
-     compositeScore Int
-     recommendation String
-     regime         String?
-     /// Snapshot of the per-phase signal adjustments — JSON for forwards-compat.
-     signalBreakdown String
-     /// Sha-1 of the analysis JSON for cheap "did anything change?" lookups.
-     analysisHash   String
-     @@index([symbol, timestamp])
-     @@index([timestamp])
-   }
-   ```
-2. In `background-fetcher.fetchBatch`, after the analysis is finalised, append one `RecommendationLog` row **only when the recommendation or score has changed** (deduplicate by analysisHash). Cheap; bounded growth.
-3. Retention: keep forever for paper trades' parent symbols; rolling 2-year window otherwise.
-4. Minimal `/audit/<symbol>` read endpoint (no UI needed yet — just JSON) so Phase 15 backtests can replay.
-
-### Tests
-- Insert deduplication: identical analysis ⇒ no new row.
-- Score change ⇒ new row.
-- Retention pruning preserves rows linked to open paper trades (forward-compat with Phase 16).
-
-### Effort: **1.5 days**.
-
----
 
 ## Phase 12 — FDA / drug-trial catalyst *(was "Phase 7.2")*
 
@@ -437,23 +404,22 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~39.5 days of build time across Phases 0–10. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~41 days of build time across Phases 0–11. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 11 | Audit log foundation | 1.5 d | 1.5 d |
-| 12 | FDA / drug-trial catalyst | 1.5 d | 3 d |
-| 13 | Tax-aware decisions | 4 d | 7 d |
-| 14 | Trade card UI | 3 d | 10 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 20 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 24 d |
-| 17 | Postgres migration | 1.5 d | 25.5 d |
-| 18 | Decay monitoring | 3 d | 28.5 d |
-| 19 | Alternative data | 5 d | 33.5 d |
-| 20 | Portfolio optimization | 5 d | 38.5 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 53.5 d |
+| 12 | FDA / drug-trial catalyst | 1.5 d | 1.5 d |
+| 13 | Tax-aware decisions | 4 d | 5.5 d |
+| 14 | Trade card UI | 3 d | 8.5 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 18.5 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 22.5 d |
+| 17 | Postgres migration | 1.5 d | 24 d |
+| 18 | Decay monitoring | 3 d | 27 d |
+| 19 | Alternative data | 5 d | 32 d |
+| 20 | Portfolio optimization | 5 d | 37 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 52 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

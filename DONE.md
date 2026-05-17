@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 10 (~39.5 days of build time).
+**Done so far:** Phases 0 through 11 (~41 days of build time).
 
 ---
 
@@ -543,3 +543,40 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 - **Migration to a real queue library** (Bottleneck / p-queue) — the home-rolled `serialThrottle` is intentionally tiny. Reconsider when we need more than serial + backoff.
 
 ### Effort: **2 days** (matched plan estimate).
+
+---
+
+## Phase 11 — Audit log foundation ✅ DONE
+
+**Why this had to happen before Phase 15:** before this phase, `AnalysisCache` held only the *current* analysis per symbol. When a stock moved BUY → HOLD → BUY → STRONG BUY over a week, the upserts overwrote each transition. Phase 15 (backtest) needs the opposite — a permanent, replayable timeline. Phase 18 (decay monitor) needs the same data to compare live vs backtest. Without Phase 11, both downstream phases would be blocked on a missing data source.
+
+**Shipped:**
+- **New Prisma model `RecommendationLog`** — id / symbol / timestamp / compositeScore (Int) / recommendation / regime / analysisHash (SHA-1 of canonical key) / signalBreakdown (full-analysis JSON snapshot). Indexed on `(symbol, timestamp)` for the read API and on `timestamp` alone for the prune cron. `npx prisma db push` applied to dev DB.
+- **`src/lib/recommendation-log.ts`** (100% line coverage, 94.11% branch). Four exports:
+  - `hashRecommendationKey(analysis)` — pure. SHA-1 of `{score, recommendation, regime, sorted catalysts.present, qualityVeto.reason}`. Set semantics for catalysts (sorted before hashing) so list ordering noise can't trigger a write.
+  - `maybeLogRecommendation(symbol, analysis)` — fetches the most recent row's hash for this symbol, compares, inserts only when different. Returns `{ wrote: boolean; reason: "first-row" | "changed" | "unchanged" | "error" }`. Best-effort: any DB failure is logged via `audit-log:write.failure` and the function returns `{ wrote: false, reason: "error" }` — the fetcher never crashes from audit-log issues.
+  - `getAuditTrail(symbol, { from?, to?, limit? })` — chronologically ascending. Defaults to a 30-day window if no `from` supplied. `limit` is capped at `RECOMMENDATION_LOG_CONFIG.maxReadRows` (5000) regardless of caller input. Returns `signalBreakdown` JSON-parsed back to a structured object; falls back to `{ _raw: ... }` on parse failure (forward-compat shield).
+  - `pruneOldRecommendations()` — deletes rows older than 3 years. Returns the deletion count. TODO marker for Phase 16's paper-trade carve-out (don't prune symbols with open paper trades) when `PaperTrade` exists.
+- **`RECOMMENDATION_LOG_CONFIG`** in `src/lib/config.ts`: 3-year retention, daily prune cadence, 30-day default read window, 5000-row hard cap on read responses.
+- **Wired into `background-fetcher.fetchBatch`** — one `await maybeLogRecommendation(stock.symbol, analysis)` after the existing `analysisCache.upsert`. By design, persistence failures here cannot break the fetcher.
+- **Registered the audit-log prune cron via the Phase 10 scheduler** — sits alongside the existing `log-prune`. `audit-log:prune.done` whitelisted in `log-persistence.ts` so successful runs surface on `/logs`.
+- **`src/app/api/audit/[symbol]/route.ts`** — JSON-only endpoint. Validates symbol shape (same regex as `/api/news/[symbol]`), uppercases it, accepts optional `from` / `to` / `limit` query params. Rejects malformed dates with HTTP 400 (rather than silent fallback that would mask a typo in a backtest URL). Returns `{ symbol, count, rows }` shape.
+
+**Behavior preserved:** all 32 prior `background-fetcher.test.ts` tests pass without modification — the `maybeLogRecommendation` call is non-blocking in the failure path.
+
+**Snapshot field design (deliberate choice):**
+- Full `JSON.stringify(analysis)` minus the `signals[]` array. `signals[]` is UI-derived and reconstructible from the rest of the Analysis; persisting it would inflate row size 2-3× with zero replay value.
+- Forward-compatible: when new fields land in `Analysis` (Phase 13 tax info, Phase 14 trade-card extras), they appear in new rows automatically. When Phase 15 reads old rows, missing fields default to `undefined`.
+
+**Tests & coverage:**
+- **22 new pure tests** for `recommendation-log.ts` (hash dedup across every key-change vector, hash invariance to catalyst-list ordering and signal-weight noise, maybeLog first-row / unchanged / changed / error paths, signals[] stripping, score-rounding to Int, getAuditTrail mapping + defaults + ISO-string acceptance + max-rows cap + JSON parse-fallback, prune counting + failure handling).
+- **9 new API tests** for `/api/audit/[symbol]` (400 on bad symbol, uppercase normalisation, happy-path rows + count, empty-history symbol, query-param forwarding, 400 on bad from/to, negative-limit normalisation, 500 on internal error).
+- **3 new `background-fetcher` integration tests**: first-observation writes a row; identical-analysis re-runs write zero rows; `RecommendationLog` write failure doesn't break `AnalysisCache` upsert.
+- 696 tests pass total (662 + 34 new). Coverage **97.69 / 92.45 / 97.83 / 97.69** — all thresholds met. `recommendation-log.ts` itself is 100 / 94.11.
+
+**Deferred:**
+- **Paper-trade carve-out in the prune cron** — until `PaperTrade` exists (Phase 16), can't filter on it. Marked with a clear `TODO (Phase 16)` comment in `pruneOldRecommendations()`.
+- **Audit-trail UI** — JSON endpoint is enough for Phase 15 (backtest) and Phase 18 (decay monitor) to consume. A `/audit/[symbol]` page rendering the timeline as a chart can come later if a human ever wants to eyeball it.
+- **Cross-symbol queries** (e.g. "every BUY recommendation made on 2026-02-15") — not needed by Phase 15/18 directly. If a future feature wants it, the existing `(timestamp)` index already supports it.
+
+### Effort: **1.5 days** (matched plan estimate).

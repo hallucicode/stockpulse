@@ -16,6 +16,7 @@ const dbMock: any = {
   analysisCache: { upsert: vi.fn() },
   dataQualityLog: { createMany: vi.fn() },
   earningsEvent: { findMany: vi.fn(), upsert: vi.fn() },
+  recommendationLog: { findFirst: vi.fn(), create: vi.fn() },
 };
 vi.mock("@/lib/db", () => ({ db: dbMock }));
 
@@ -124,6 +125,8 @@ beforeEach(() => {
   dbMock.analysisCache.upsert = vi.fn();
   dbMock.dataQualityLog.createMany = vi.fn().mockResolvedValue({});
   dbMock.earningsEvent.findMany = vi.fn().mockResolvedValue([]);
+  dbMock.recommendationLog.findFirst = vi.fn().mockResolvedValue(null);
+  dbMock.recommendationLog.create = vi.fn().mockResolvedValue({});
   earningsSourceMock.refreshEarningsCalendar = vi.fn().mockResolvedValue(0);
   earningsSourceMock.getNextEarningsForSymbol = vi.fn().mockResolvedValue(null);
   logPersistenceMock.pruneOldLogs = vi.fn().mockResolvedValue(0);
@@ -689,6 +692,92 @@ describe("background-fetcher", () => {
       dbMock.analysisCache.upsert.mock.calls[0][0].create.data
     );
     expect(cached.analysis.sectorRotation).toBeUndefined();
+  });
+
+  it("appends one RecommendationLog row on first observation (Phase 11)", async () => {
+    vi.resetModules();
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "NVDA", name: "Nvidia", sector: "Tech" },
+    ]);
+    marketMock.getHistory.mockResolvedValue(freshHistory());
+    analysisMock.analyzeStock.mockReturnValue({
+      symbol: "NVDA",
+      compositeScore: 42,
+      recommendation: "BUY",
+      signals: [],
+    });
+    // No prior row → first-write path.
+    dbMock.recommendationLog.findFirst.mockResolvedValue(null);
+    dbMock.analysisCache.upsert.mockResolvedValue({});
+
+    const mod = await import("@/lib/background-fetcher");
+    await mod.refreshAllStocks();
+
+    expect(dbMock.recommendationLog.create).toHaveBeenCalledTimes(1);
+    const data = dbMock.recommendationLog.create.mock.calls[0][0].data;
+    expect(data.symbol).toBe("NVDA");
+    expect(data.compositeScore).toBe(42);
+    expect(data.recommendation).toBe("BUY");
+    expect(typeof data.analysisHash).toBe("string");
+  });
+
+  it("skips the RecommendationLog write when nothing changed (Phase 11)", async () => {
+    vi.resetModules();
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "FLAT", name: "Flat Co", sector: "Other" },
+    ]);
+    marketMock.getHistory.mockResolvedValue(freshHistory());
+    analysisMock.analyzeStock.mockReturnValue({
+      symbol: "FLAT",
+      compositeScore: 10,
+      recommendation: "HOLD",
+      signals: [],
+    });
+    // Stub findFirst to return whatever hash maybeLogRecommendation would
+    // compute for this exact analysis — easiest way: stash it in a
+    // closure variable on first call and return it on subsequent calls.
+    // Simpler: use the real hashRecommendationKey to compute it once.
+    const { hashRecommendationKey } = await import(
+      "@/lib/recommendation-log"
+    );
+    const expectedHash = hashRecommendationKey({
+      symbol: "FLAT",
+      compositeScore: 10,
+      recommendation: "HOLD",
+      signals: [],
+    } as never);
+    dbMock.recommendationLog.findFirst.mockResolvedValue({
+      analysisHash: expectedHash,
+    });
+    dbMock.analysisCache.upsert.mockResolvedValue({});
+
+    const mod = await import("@/lib/background-fetcher");
+    await mod.refreshAllStocks();
+
+    expect(dbMock.recommendationLog.create).not.toHaveBeenCalled();
+  });
+
+  it("survives a RecommendationLog write failure (Phase 11)", async () => {
+    vi.resetModules();
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "AAPL", name: "Apple", sector: "Tech" },
+    ]);
+    marketMock.getHistory.mockResolvedValue(freshHistory());
+    analysisMock.analyzeStock.mockReturnValue({
+      symbol: "AAPL",
+      compositeScore: 30,
+      recommendation: "BUY",
+      signals: [],
+    });
+    dbMock.recommendationLog.findFirst.mockResolvedValue(null);
+    dbMock.recommendationLog.create.mockRejectedValue(new Error("db down"));
+    dbMock.analysisCache.upsert.mockResolvedValue({});
+
+    const mod = await import("@/lib/background-fetcher");
+    const r = await mod.refreshAllStocks();
+    // The analysis still got cached (the fetcher's actual job).
+    expect(r.succeeded).toBe(1);
+    expect(dbMock.analysisCache.upsert).toHaveBeenCalledTimes(1);
   });
 
   it("attaches an empty CatalystInfo when no catalysts apply (Phase 7)", async () => {

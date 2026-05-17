@@ -70,6 +70,11 @@ import { registerCron, startAll, stopAll } from "./scheduler";
 import { sleep } from "./throttle";
 import type { Regime, SectorRotationInfo } from "@/types";
 import { pruneOldLogs } from "./log-persistence";
+import {
+  maybeLogRecommendation,
+  pruneOldRecommendations,
+} from "./recommendation-log";
+import { RECOMMENDATION_LOG_CONFIG } from "./config";
 
 const yf = new YahooFinance();
 
@@ -270,6 +275,12 @@ async function fetchBatch(
         update: { data, fetchedAt: new Date() },
         create: { symbol: stock.symbol, data, fetchedAt: new Date() },
       });
+
+      // ── Phase 11: append to the audit timeline when something
+      // externally-observable changed. `maybeLogRecommendation` is
+      // best-effort — failures are logged internally and never
+      // thrown, so an audit-log hiccup can never break the fetcher.
+      await maybeLogRecommendation(stock.symbol, analysis);
 
       return stock.symbol;
     })
@@ -492,6 +503,14 @@ function registerCrons(): void {
     run: async () => {
       const deleted = await pruneOldLogs();
       if (deleted > 0) log.info("log-prune", "done", { deleted });
+    },
+  });
+  registerCron({
+    name: "audit-log.prune",
+    intervalMs: RECOMMENDATION_LOG_CONFIG.pruneIntervalMs,
+    run: async () => {
+      const deleted = await pruneOldRecommendations();
+      if (deleted > 0) log.info("audit-log", "prune.done", { deleted });
     },
   });
 }
