@@ -29,6 +29,8 @@ export interface CatalystInput {
   diagnosis?: { category: DiagnosisCategory } | null;
   // Phase 7.1 — sector rotation state for the symbol's sector.
   sectorRotation?: { state: SectorRotationState } | null;
+  // Phase 12 — FDA drug-approval activity (Healthcare-sector only).
+  fda?: { hasRecentApproval: boolean } | null;
 }
 
 /**
@@ -94,6 +96,16 @@ export function evaluateCatalysts(
     score += cfg.weights.sector_rotation;
   }
 
+  // 6. FDA approval (Phase 12) — Healthcare-sector only; fires when at
+  //    least one approval is in `approvalWindowDays` (see fda.ts). The
+  //    overlap with Phase 4's `positive_news` (which often also fires
+  //    on FDA approval headlines) is intentional: news catches that the
+  //    market noticed, openFDA confirms the approval actually happened.
+  if (input.fda?.hasRecentApproval) {
+    present.push("fda_event");
+    score += cfg.weights.fda_event;
+  }
+
   return {
     score,
     present,
@@ -117,6 +129,7 @@ export function applyCatalystAdjustment(
       analysts: analysis.analysts ?? null,
       diagnosis: analysis.diagnosis ?? null,
       sectorRotation: analysis.sectorRotation ?? null,
+      fda: analysis.fda ?? null,
     },
     cfg
   );

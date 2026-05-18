@@ -124,10 +124,14 @@ export interface Analysis {
   // a sector ETF proxy is configured (see SECTOR_ETF_MAP). Null/undefined
   // means we don't track this sector or no snapshot exists yet.
   sectorRotation?: SectorRotationInfo;
+  // Phase 12 — recent FDA drug-approval activity (Healthcare-sector only).
+  // Undefined means we don't track FDA events for this symbol; defined
+  // with `hasRecentApproval: false` means we tracked it but found nothing.
+  fda?: FdaActivity;
 }
 
 // Phase 7 — discrete catalyst types aggregated by `evaluateCatalysts`.
-// New entries here = future Phase 7.x expansions (FDA dates, investor days).
+// New entries here = future Phase 7.x expansions (investor days, etc).
 // Adding one means: add weight in CATALYST_CONFIG.weights, add detection
 // branch in `evaluateCatalysts`, add a label in the UI tooltip.
 export type CatalystType =
@@ -135,7 +139,8 @@ export type CatalystType =
   | "insider_cluster"
   | "analyst_upgrade"
   | "positive_news"
-  | "sector_rotation";
+  | "sector_rotation"
+  | "fda_event";
 
 // Phase 7.1 — sector rotation state for a single sector ETF.
 //   - turning_up    : recently crossed above 200dma after sustained downtrend.
@@ -296,6 +301,20 @@ export interface AnalystActivity {
   } | null;
   /** Score adjustment (sum of upgradeBoost + downgradeBoost). */
   scoreAdjustment: number;
+}
+
+// Phase 12 — FDA drug-approval activity attached to every Healthcare-sector
+// Analysis we manage to match against an openFDA approval. Stocks in
+// non-Healthcare sectors get `fda` left undefined (we don't track them).
+// When tracked but no approval falls inside the catalyst window, the
+// shape is `{ hasRecentApproval: false, lastApprovalAt: null, ... }`.
+export interface FdaActivity {
+  /** True when at least one approval lies inside FDA_CONFIG.approvalWindowDays. */
+  hasRecentApproval: boolean;
+  /** ISO date of the most recent approval (any window). Null when none. */
+  lastApprovalAt: string | null;
+  /** Brief human-readable summary for the UI tooltip. Empty when none. */
+  description: string;
 }
 
 // ─── Portfolio ───

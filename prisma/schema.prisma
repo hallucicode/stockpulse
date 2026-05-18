@@ -243,6 +243,45 @@ model AnalystAction {
   @@index([symbol, publishedAt])
 }
 
+/// FDA drug approvals tied to watchlist tickers (Phase 12).
+///
+/// Source: openFDA `/drug/drugsfda.json` filtered to recently-approved
+/// submissions. The cron pulls every approval in the last
+/// `lookbackDays` window, matches each against the Healthcare-sector
+/// portion of the watchlist (two-tier matching via `fda.ts`), and
+/// persists one row per (symbol, applicationNumber, date).
+///
+/// Used by Phase 7 catalyst aggregator: when a row exists in the
+/// `approvalWindowDays` window for a symbol, the `fda_event` catalyst
+/// fires.
+///
+/// We intentionally store the un-normalised applicantName so an
+/// operator looking at /logs can audit "why did we match MRK to this
+/// row?" — useful when investigating a false positive.
+model FdaEvent {
+  id                String   @id @default(cuid())
+  symbol            String
+  /// FDA application number (e.g. "BLA125514", "NDA208447"). Stable
+  /// across resubmissions — the join key for dedup.
+  applicationNumber String
+  /// "approval" today. Reserved for future "phase3_complete",
+  /// "pdufa_date", etc. once we have data sources for those.
+  eventType         String
+  /// Date of the FDA decision (parsed from openFDA's
+  /// `submission_status_date`).
+  date              DateTime
+  /// Original sponsor / applicant string from openFDA — kept verbatim
+  /// for auditability of the watchlist-match.
+  applicantName     String
+  /// Human-readable summary, e.g. "FDA approval: KEYTRUDA (BLA125514)".
+  description       String
+  fetchedAt         DateTime @default(now())
+
+  @@unique([symbol, applicationNumber, date])
+  @@index([symbol, date])
+  @@index([fetchedAt])
+}
+
 /// Permanent recommendation timeline (Phase 11).
 ///
 /// Background-fetcher appends one row per (symbol, externally-observable

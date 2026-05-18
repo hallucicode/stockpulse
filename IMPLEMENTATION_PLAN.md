@@ -77,6 +77,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 9.5 — ESLint setup
 - Phase 10 — Scheduler + rate-limit refactor
 - Phase 11 — Audit log foundation
+- Phase 12 — FDA / drug-trial catalyst
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -95,31 +96,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 
 
-## Phase 12 — FDA / drug-trial catalyst *(was "Phase 7.2")*
-
-**Why now:** Rounds out the Phase 7 catalyst suite. Smaller scope than the other features; good cleanup item before getting into user-facing work.
-
-### Tasks
-1. New edge module `src/lib/fda-source.ts` — query openFDA `/drug/drugsfda.json` for recent approvals.
-2. **Ticker ↔ drug-applicant matching** (the hard part):
-   - Pull `applicant_full_name` from openFDA.
-   - Match against `WatchlistStock.name` with a normalised lowercase + strip-suffix comparison (drop "Inc", "Corp", "Pharmaceuticals", etc.).
-   - When ambiguous, log + skip (don't false-positively credit a catalyst).
-3. New Prisma model `FdaEvent { symbol, eventType, date, description }`.
-4. Extend `CatalystType` with `fda_event`; add detection branch in `evaluateCatalysts`.
-5. Daily cron via the new Phase 10 scheduler.
-
-### Caveats
-- openFDA exposes **approvals** reliably but **upcoming PDUFA dates** sparsely. Scope the catalyst to *recent approval announcements* (last 30 days). Defer "upcoming PDUFA" until a clean data source exists.
-- Restrict to Healthcare-sector stocks to limit false positives.
-
-### Tests
-- Mock openFDA response, verify catalyst fires only for the right tickers.
-- Ambiguous applicant name ⇒ skipped, not crashed.
-
-### Effort: **1.5 days**.
-
----
 
 ## Phase 13 — Tax-aware decisions *(was "Phase 9")*
 
@@ -438,23 +414,22 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~41 days of build time across Phases 0–11. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~42.5 days of build time across Phases 0–12. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 12 | FDA / drug-trial catalyst | 1.5 d | 1.5 d |
-| 13 | Tax-aware decisions | 4 d | 5.5 d |
-| 14 | Trade card UI | 3 d | 8.5 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 18.5 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 22.5 d |
-| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 23 d |
-| 17 | Postgres migration | 1.5 d | 24.5 d |
-| 18 | Decay monitoring | 3 d | 27.5 d |
-| 19 | Alternative data | 5 d | 32.5 d |
-| 20 | Portfolio optimization | 5 d | 37.5 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 52.5 d |
+| 13 | Tax-aware decisions | 4 d | 4 d |
+| 14 | Trade card UI | 3 d | 7 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 17 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 21 d |
+| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 21.5 d |
+| 17 | Postgres migration | 1.5 d | 23 d |
+| 18 | Decay monitoring | 3 d | 26 d |
+| 19 | Alternative data | 5 d | 31 d |
+| 20 | Portfolio optimization | 5 d | 36 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 51 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

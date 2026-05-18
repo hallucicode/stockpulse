@@ -91,6 +91,7 @@ const CATALYST_LABEL: Record<CatalystType, string> = {
   analyst_upgrade: "Recent analyst upgrade",
   positive_news: "Positive news catalyst",
   sector_rotation: "Sector turning up after downtrend",
+  fda_event: "Recent FDA drug approval",
 };
 
 function ConfidenceStars({ catalysts }: { catalysts: CatalystInfo }) {

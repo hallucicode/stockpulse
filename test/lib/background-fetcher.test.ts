@@ -17,6 +17,7 @@ const dbMock: any = {
   dataQualityLog: { createMany: vi.fn() },
   earningsEvent: { findMany: vi.fn(), upsert: vi.fn() },
   recommendationLog: { findFirst: vi.fn(), create: vi.fn() },
+  fdaEvent: { findMany: vi.fn(), upsert: vi.fn() },
 };
 vi.mock("@/lib/db", () => ({ db: dbMock }));
 
@@ -93,6 +94,19 @@ const optionsSourceMock: any = {
 };
 vi.mock("@/lib/options-source", () => optionsSourceMock);
 
+// FDA source (Phase 12).
+const fdaSourceMock: any = {
+  refreshFdaApprovals: vi.fn().mockResolvedValue({
+    total: 0,
+    matched: 0,
+    skippedUnmatched: 0,
+    errored: 0,
+    duration: 0,
+  }),
+  getRecentApprovalsForSymbol: vi.fn().mockResolvedValue([]),
+};
+vi.mock("@/lib/fda-source", () => fdaSourceMock);
+
 // Build a fresh, validation-passing history. Tests that want to trigger the
 // data-quality firewall override this explicitly.
 function freshHistory(bars = 10) {
@@ -164,6 +178,14 @@ beforeEach(() => {
     duration: 0,
   });
   optionsSourceMock.getLatestOptionsForSymbol = vi.fn().mockResolvedValue(null);
+  fdaSourceMock.refreshFdaApprovals = vi.fn().mockResolvedValue({
+    total: 0,
+    matched: 0,
+    skippedUnmatched: 0,
+    errored: 0,
+    duration: 0,
+  });
+  fdaSourceMock.getRecentApprovalsForSymbol = vi.fn().mockResolvedValue([]);
   marketMock.getHistory = vi.fn();
   analysisMock.analyzeStock = vi.fn();
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -778,6 +800,89 @@ describe("background-fetcher", () => {
     // The analysis still got cached (the fetcher's actual job).
     expect(r.succeeded).toBe(1);
     expect(dbMock.analysisCache.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires fda_event catalyst when Healthcare stock has a recent approval (Phase 12)", async () => {
+    vi.resetModules();
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "MRK", name: "Merck & Co Inc", sector: "Healthcare" },
+    ]);
+    marketMock.getHistory.mockResolvedValue(freshHistory());
+    analysisMock.analyzeStock.mockReturnValue({
+      symbol: "MRK",
+      compositeScore: 20,
+      recommendation: "BUY",
+      signals: [],
+    });
+    fdaSourceMock.getRecentApprovalsForSymbol.mockResolvedValue([
+      {
+        date: new Date().toISOString(),
+        description: "FDA approval: KEYTRUDA (BLA125514)",
+      },
+    ]);
+    dbMock.analysisCache.upsert.mockResolvedValue({});
+
+    const mod = await import("@/lib/background-fetcher");
+    await mod.refreshAllStocks();
+
+    const cached = JSON.parse(
+      dbMock.analysisCache.upsert.mock.calls[0][0].create.data
+    );
+    expect(cached.analysis.fda?.hasRecentApproval).toBe(true);
+    expect(cached.analysis.catalysts.present).toContain("fda_event");
+  });
+
+  it("skips FDA decoration for non-Healthcare stocks (Phase 12)", async () => {
+    vi.resetModules();
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "AAPL", name: "Apple Inc", sector: "Tech" },
+    ]);
+    marketMock.getHistory.mockResolvedValue(freshHistory());
+    analysisMock.analyzeStock.mockReturnValue({
+      symbol: "AAPL",
+      compositeScore: 20,
+      recommendation: "BUY",
+      signals: [],
+    });
+    dbMock.analysisCache.upsert.mockResolvedValue({});
+
+    const mod = await import("@/lib/background-fetcher");
+    await mod.refreshAllStocks();
+
+    // The FDA read should have been skipped entirely for the Tech stock.
+    expect(fdaSourceMock.getRecentApprovalsForSymbol).not.toHaveBeenCalled();
+    const cached = JSON.parse(
+      dbMock.analysisCache.upsert.mock.calls[0][0].create.data
+    );
+    expect(cached.analysis.fda).toBeUndefined();
+    expect(cached.analysis.catalysts.present).not.toContain("fda_event");
+  });
+
+  it("survives a failed FDA lookup (Phase 12)", async () => {
+    vi.resetModules();
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "MRK", name: "Merck & Co Inc", sector: "Healthcare" },
+    ]);
+    marketMock.getHistory.mockResolvedValue(freshHistory());
+    analysisMock.analyzeStock.mockReturnValue({
+      symbol: "MRK",
+      compositeScore: 20,
+      recommendation: "BUY",
+      signals: [],
+    });
+    fdaSourceMock.getRecentApprovalsForSymbol.mockRejectedValue(
+      new Error("db blip")
+    );
+    dbMock.analysisCache.upsert.mockResolvedValue({});
+
+    const mod = await import("@/lib/background-fetcher");
+    const r = await mod.refreshAllStocks();
+    expect(r.succeeded).toBe(1);
+    const cached = JSON.parse(
+      dbMock.analysisCache.upsert.mock.calls[0][0].create.data
+    );
+    expect(cached.analysis.fda).toBeUndefined();
+    expect(cached.analysis.catalysts.present).not.toContain("fda_event");
   });
 
   it("attaches an empty CatalystInfo when no catalysts apply (Phase 7)", async () => {
