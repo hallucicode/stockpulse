@@ -59,6 +59,7 @@ const PERSISTED_INFO_EVENTS: ReadonlySet<string> = new Set([
   "options:refresh.start",
   "options:refresh.done",
   "options:refresh.progress",
+  "audit-log:prune.done",
   "discovery:watchlist.added",
   "notifications:skip.no-topic",
 ]);

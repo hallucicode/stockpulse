@@ -76,6 +76,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 9 — Continuous integration
 - Phase 9.5 — ESLint setup
 - Phase 10 — Scheduler + rate-limit refactor
+- Phase 11 — Audit log foundation
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -93,40 +94,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 
 
-## Phase 11 — Audit log foundation *(tech debt, blocks Phase 15)*
-
-**Why now:** Phase 15 (backtest) needs the ground truth of "what did we recommend, when, with what score, in what regime?". Today, only the *current* analysis is persisted in `AnalysisCache` — historical recommendations are gone. The longer this waits, the less retrospective data we have when Phase 15 finally runs.
-
-### Tasks
-1. New Prisma model `RecommendationLog`:
-   ```prisma
-   model RecommendationLog {
-     id             String   @id @default(cuid())
-     symbol         String
-     timestamp      DateTime @default(now())
-     compositeScore Int
-     recommendation String
-     regime         String?
-     /// Snapshot of the per-phase signal adjustments — JSON for forwards-compat.
-     signalBreakdown String
-     /// Sha-1 of the analysis JSON for cheap "did anything change?" lookups.
-     analysisHash   String
-     @@index([symbol, timestamp])
-     @@index([timestamp])
-   }
-   ```
-2. In `background-fetcher.fetchBatch`, after the analysis is finalised, append one `RecommendationLog` row **only when the recommendation or score has changed** (deduplicate by analysisHash). Cheap; bounded growth.
-3. Retention: keep forever for paper trades' parent symbols; rolling 2-year window otherwise.
-4. Minimal `/audit/<symbol>` read endpoint (no UI needed yet — just JSON) so Phase 15 backtests can replay.
-
-### Tests
-- Insert deduplication: identical analysis ⇒ no new row.
-- Score change ⇒ new row.
-- Retention pruning preserves rows linked to open paper trades (forward-compat with Phase 16).
-
-### Effort: **1.5 days**.
-
----
 
 ## Phase 12 — FDA / drug-trial catalyst *(was "Phase 7.2")*
 
@@ -279,6 +246,39 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 - Edge: stop and target both touched same day — use intraday OHLC to resolve realistically (whichever was hit first).
 
 ### Effort: **4 days** + **12-month soak time**.
+
+---
+
+## Phase 16.1 — Paper-trade carve-out for audit-log prune
+
+**Why this is its own sub-phase:** Phase 11 left a `TODO (Phase 16)` marker in `pruneOldRecommendations()` — the prune cron currently deletes every `RecommendationLog` row older than 3 years, with no awareness of paper trades. Once Phase 16 ships the `PaperTrade` model, we **must not** prune a row whose symbol still has an open paper trade; that row is part of the audit chain proving the recommendation that opened the trade.
+
+Pulled out as a sub-phase rather than folded into Phase 16 itself because Phase 16 is already a substantial feature + 12-month soak commitment; bundling unrelated audit-log surgery would balloon the PR scope.
+
+### Tasks
+1. Update `pruneOldRecommendations()` in `src/lib/recommendation-log.ts` to additionally exclude symbols that appear in any `PaperTrade` row with `status = "open"`:
+   ```ts
+   const openSymbols = (await db.paperTrade.findMany({
+     where: { status: "open" },
+     select: { symbol: true },
+     distinct: ["symbol"],
+   })).map((r) => r.symbol);
+   await db.recommendationLog.deleteMany({
+     where: {
+       timestamp: { lt: cutoff },
+       symbol: { notIn: openSymbols },
+     },
+   });
+   ```
+2. Update the existing test to assert that rows for a symbol with an open paper trade survive the prune even when past the cutoff.
+3. Remove the `TODO (Phase 16)` comment from `pruneOldRecommendations()`.
+
+### Tests
+- Single row past cutoff, no paper trades → deleted.
+- Single row past cutoff, symbol has open paper trade → preserved.
+- Single row past cutoff, symbol has only *closed* paper trades → still deleted (audit context for the closed trade has already served its purpose).
+
+### Effort: **0.5 day**. Tiny scope; should land in the same week as Phase 16 merges.
 
 ---
 
@@ -437,23 +437,23 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~39.5 days of build time across Phases 0–10. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~41 days of build time across Phases 0–11. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 11 | Audit log foundation | 1.5 d | 1.5 d |
-| 12 | FDA / drug-trial catalyst | 1.5 d | 3 d |
-| 13 | Tax-aware decisions | 4 d | 7 d |
-| 14 | Trade card UI | 3 d | 10 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 20 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 24 d |
-| 17 | Postgres migration | 1.5 d | 25.5 d |
-| 18 | Decay monitoring | 3 d | 28.5 d |
-| 19 | Alternative data | 5 d | 33.5 d |
-| 20 | Portfolio optimization | 5 d | 38.5 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 53.5 d |
+| 12 | FDA / drug-trial catalyst | 1.5 d | 1.5 d |
+| 13 | Tax-aware decisions | 4 d | 5.5 d |
+| 14 | Trade card UI | 3 d | 8.5 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 18.5 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 22.5 d |
+| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 23 d |
+| 17 | Postgres migration | 1.5 d | 24.5 d |
+| 18 | Decay monitoring | 3 d | 27.5 d |
+| 19 | Alternative data | 5 d | 32.5 d |
+| 20 | Portfolio optimization | 5 d | 37.5 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 52.5 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

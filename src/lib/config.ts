@@ -506,6 +506,35 @@ export const LOG_PERSISTENCE_CONFIG = {
   pruneIntervalMs: 24 * 60 * 60 * 1000,
 } as const;
 
+// ─── Recommendation log (Phase 11 — audit foundation) ───
+//
+// Permanent, replayable timeline of every distinct recommendation the
+// system has made. Phase 15 (backtest) replays this to evaluate signal
+// quality; Phase 18 (decay monitor) compares live vs backtest from it.
+//
+// The table is **append-only on change**: a row is written only when
+// the canonical key (score, recommendation, regime, present catalysts,
+// quality-veto reason) differs from the last row for that symbol.
+// Identical re-runs do not write a row.
+export const RECOMMENDATION_LOG_CONFIG = {
+  // How long rows survive before the prune cron deletes them. 3 years
+  // covers Phase 15's longest backtest horizon plus a margin for
+  // Phase 18's rolling-window comparisons. Revisit when Phase 17 puts
+  // us on Postgres and we have real growth data.
+  retentionDays: 3 * 365,
+  // How often the prune cron fires.
+  pruneIntervalMs: 24 * 60 * 60 * 1000,
+  // Default window for the GET /api/audit/[symbol] endpoint when no
+  // explicit `from` / `to` query params are supplied. 30 days matches
+  // the eyeballable monthly review use-case; backtests will always
+  // specify explicit dates.
+  defaultReadWindowDays: 30,
+  // Hard cap on rows returned by a single API call (defensive — the
+  // dedup means even a year of activity is bounded, but a runaway
+  // bug shouldn't be able to ship 100k rows in one HTTP response).
+  maxReadRows: 5_000,
+} as const;
+
 // ─── Earnings calendar (Phase 3) ───
 // Suppress / downgrade buy signals when an earnings announcement is imminent.
 // Holding through earnings is a coin flip; the app should remove the temptation.
