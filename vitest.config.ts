@@ -6,19 +6,44 @@ export default defineConfig({
     jsx: "automatic",
   },
   test: {
-    // Default to `node` so the 39 of 47 test files that don't touch
-    // the DOM (pure modules, edge modules, Next API route handlers)
-    // skip the ~3-4s of cumulative jsdom-bootstrap each file would
-    // otherwise pay. `environmentMatchGlobs` below opts the React
-    // component + hook tests back into jsdom.
+    // Two projects: a `node` env for pure modules / edge modules / API
+    // route handlers (the majority — they don't touch the DOM and would
+    // otherwise pay a ~3-4s jsdom-bootstrap tax per file), and a `jsdom`
+    // env for React components + hooks.
     //
-    // Measured baseline (before this change): test:coverage took
-    // ~139s wall clock with `environment: "jsdom"` for all 47 files.
-    // Most of the time was env setup, not test work.
-    environment: "node",
-    environmentMatchGlobs: [
-      ["test/components/**", "jsdom"],
-      ["test/hooks/**", "jsdom"],
+    // Replaces the deprecated `environmentMatchGlobs` (slated for
+    // removal in vitest 4) with the supported `projects` API. Both
+    // projects inherit the root `test` config via `extends: true` so
+    // `setupFiles`, `globals`, `exclude`, and `coverage` apply
+    // uniformly — only `environment` and per-project `include` differ.
+    //
+    // Measured impact of the env split (still applies post-migration):
+    // test:coverage went from ~139s wall clock (single jsdom env) to
+    // ~50–65s. Most of the time was env setup, not test work.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: [
+            "test/api/**/*.test.{ts,tsx}",
+            "test/lib/**/*.test.{ts,tsx}",
+          ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "jsdom",
+          environment: "jsdom",
+          include: [
+            "test/components/**/*.test.{ts,tsx}",
+            "test/hooks/**/*.test.{ts,tsx}",
+            "test/app/**/*.test.{ts,tsx}",
+          ],
+        },
+      },
     ],
     setupFiles: ["./test/setup.ts"],
     globals: true,
