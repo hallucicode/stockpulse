@@ -421,6 +421,7 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 - Sentry / Datadog for production error tracking + per-API latency.
 - Proper secret management (Doppler / 1Password Connect) before any prod deploy.
 - Self-hosting strategy: Docker + docker-compose for paper-trading-mode deployments.
+- **Auth on the public API surface before any non-localhost deploy.** Today every `/api/*` route is open — fine for localhost dev, but the moment the app is reachable from outside `127.0.0.1` (Vercel preview, phone-on-LAN, a Tailscale tap, anything) these endpoints leak the system's full output. Most-sensitive endpoints in priority order: `/api/audit/[symbol]` (discloses every recommendation ever made — the highest-value scrape target), `/api/scanner` (live signals), `/api/portfolio` + `/api/trade` (positions + ability to mutate). Minimum bar: a shared-secret `Authorization` header check applied via Next.js middleware. Proper bar: a single-user session cookie (NextAuth or similar). Block on this *before* the first non-localhost deploy, not after.
 
 ---
 
