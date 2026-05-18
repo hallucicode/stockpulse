@@ -65,7 +65,12 @@ import {
   getLatestOptionsForSymbol,
 } from "./options-source";
 import { applyOptionsAdjustment } from "./options";
-import { SECTOR_ROTATION_CONFIG, OPTIONS_CONFIG } from "./config";
+import {
+  refreshFdaApprovals,
+  getRecentApprovalsForSymbol,
+} from "./fda-source";
+import { evaluateFdaActivity } from "./fda";
+import { SECTOR_ROTATION_CONFIG, OPTIONS_CONFIG, FDA_CONFIG } from "./config";
 import { registerCron, startAll, stopAll } from "./scheduler";
 import { sleep } from "./throttle";
 import type { Regime, SectorRotationInfo } from "@/types";
@@ -227,6 +232,25 @@ async function fetchBatch(
       // lookup against the snapshot map read once at cycle start.
       const sectorInfo = sectorRotationMap.get(stock.sector) ?? null;
       analysis = attachSectorRotation(analysis, sectorInfo);
+
+      // ── Phase 12: FDA approval decoration ──
+      // Healthcare-sector only — for everyone else we skip the DB read
+      // entirely. Failures are non-fatal: the analysis just doesn't get
+      // an `fda` field, and the fda_event catalyst silently doesn't fire.
+      if (stock.sector === "Healthcare") {
+        try {
+          const events = await getRecentApprovalsForSymbol(stock.symbol);
+          analysis = {
+            ...analysis,
+            fda: evaluateFdaActivity(events),
+          };
+        } catch (err) {
+          log.warn("fetcher", "fda.decorate.failure", {
+            symbol: stock.symbol,
+            error: err,
+          });
+        }
+      }
 
       // ── Phase 7: catalyst aggregation ──
       // Pure — reads the catalyst-shaped fields that Phases 3/4/5/7.1
@@ -496,6 +520,11 @@ function registerCrons(): void {
     name: "options.refresh",
     intervalMs: OPTIONS_CONFIG.refreshIntervalMs,
     run: () => refreshAllOptions(),
+  });
+  registerCron({
+    name: "fda.refresh",
+    intervalMs: FDA_CONFIG.refreshIntervalMs,
+    run: () => refreshFdaApprovals(),
   });
   registerCron({
     name: "log-prune",

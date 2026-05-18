@@ -22,6 +22,7 @@ import {
   REGIME_CONFIG,
   SECTOR_ROTATION_CONFIG,
   OPTIONS_CONFIG,
+  FDA_CONFIG,
 } from "./config";
 
 export type HealthStatus =
@@ -172,6 +173,16 @@ export const HEALTH_SPECS: ReadonlyArray<ComponentSpec> = [
     startEvents: ["refresh.start"],
     expectedFreshnessSec: 30 * 60 * 60,
     refreshIntervalMs: SECTOR_ROTATION_CONFIG.refreshIntervalMs,
+  },
+  {
+    component: "fda",
+    label: "FDA approvals",
+    description:
+      "Daily openFDA pull of recent drug approvals, matched against Healthcare-sector watchlist tickers. Fires a +1 catalyst on a recent approval.",
+    successEvents: ["refresh.done", "refresh.empty-watchlist"],
+    startEvents: ["refresh.start"],
+    expectedFreshnessSec: 30 * 60 * 60,
+    refreshIntervalMs: FDA_CONFIG.refreshIntervalMs,
   },
   {
     component: "discovery",

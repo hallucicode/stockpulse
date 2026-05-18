@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 11 (~41 days of build time).
+**Done so far:** Phases 0 through 12 (~42.5 days of build time).
 
 ---
 
@@ -579,5 +579,51 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 - **Paper-trade carve-out in the prune cron** — until `PaperTrade` exists (Phase 16), can't filter on it. The `TODO (Phase 16)` comment in `pruneOldRecommendations()` is now backed by a concrete **Phase 16.1** entry in `IMPLEMENTATION_PLAN.md` so the dependency can't slip again.
 - **Audit-trail UI** — JSON endpoint is enough for Phase 15 (backtest) and Phase 18 (decay monitor) to consume. A `/audit/[symbol]` page rendering the timeline as a chart can come later if a human ever wants to eyeball it.
 - **Cross-symbol queries** (e.g. "every BUY recommendation made on 2026-02-15") — not needed by Phase 15/18 directly. If a future feature wants it, the existing `(timestamp)` index already supports it.
+
+### Effort: **1.5 days** (matched plan estimate).
+
+---
+
+## Phase 12 — FDA / drug-trial catalyst ✅ DONE
+
+**Why this rounded out the catalyst suite:** Phase 7 produced 4 catalyst types and Phase 7.1 added sector rotation. The original Phase 7 plan called for an FDA catalyst too but I deferred it as "needs ticker↔drug-applicant matching strategy". That strategy is the hard part; the rest is mechanical.
+
+**Shipped:**
+- **New Prisma model `FdaEvent`** — one row per (symbol, applicationNumber, date) with eventType, applicantName (verbatim from openFDA for audit), description, fetchedAt. Indexed on `(symbol, date)` for the per-stock read and `(fetchedAt)` for any future cleanup pass.
+- **`src/lib/fda.ts`** (pure, 100% covered) — three exports:
+  - `normaliseApplicantName(name)` — strips legal suffixes (Inc, Corp, LLC, Ltd, AG, SA, NV, PLC), pharma-industry suffixes (Pharmaceuticals, Pharma, Therapeutics, Sciences, Labs), punctuation. Idempotent.
+  - `findWatchlistMatch(applicantName, watchlist)` — **two-tier matching**:
+    1. **`KNOWN_FDA_APPLICANTS`** — hand-curated map (~20 big-pharma tickers: MRK, PFE, JNJ, LLY, ABBV, GILD, BMY, AMGN, REGN, VRTX, BIIB, MRNA, NVAX, INCY, ALNY, EXEL, BMRN, IONS, SRPT, TAK) → applicant strings they're known to file under. Hits return immediately, zero false positives.
+    2. **Token-containment** — normalise both sides, require the watchlist company's largest token (≥ `minMatchTokenLength` = 4) to appear in the applicant string. Whole-word matching to avoid `"merck"` matching `"merckhausen"`.
+  - **Strict ambiguity rule:** when ≥ 2 watchlist rows match the same applicant, return null (caller logs + skips). Bias is intentionally toward false negatives — phantom catalysts on the wrong ticker are much worse than missed catalysts on the right one.
+  - `evaluateFdaActivity(events, now?)` — turns persisted rows into the `FdaActivity` field. Most-recent-wins for descriptions.
+- **`src/lib/fda-source.ts`** (edge, 100% statements) — `refreshFdaApprovals()` (daily cron) + `getRecentApprovalsForSymbol(symbol)` (per-stock read). Filters the watchlist query to `sector: "Healthcare"` so non-Healthcare names never enter the matching pipeline.
+- **openFDA endpoint:** `GET /drug/drugsfda.json?search=submissions.submission_status:AP+AND+submissions.submission_status_date:[FROM+TO+TO]&limit=100`. Free, no auth. Treats HTTP 404 as "no rows" (not error). All other failure modes log a warn and return empty — defensive over noisy.
+- **Date parsing** — openFDA returns YYYYMMDD strings (not ISO). Custom `parseOpenfdaDate` avoids Date() ambiguity.
+- **`FDA_CONFIG`** + `FdaConfig` interface in `src/lib/config.ts`. Daily refresh, 45-day lookback, 30-day catalyst window, 4-char minimum match token, max 100 results per fetch.
+- **`fda_event` added to `CatalystType`** + weight 1 in `CATALYST_CONFIG.weights`. `CATALYST_CONFIG.maxStars` bumped 5 → 6 to accommodate the sixth catalyst type (test asserts `maxStars >= count(weights)`).
+- **Wired into `evaluateCatalysts`** — one extra branch. The overlap with `positive_news` (which often fires on FDA approval headlines) is intentional: news catches that the market noticed, openFDA confirms the approval actually happened.
+- **Wired into `background-fetcher.fetchBatch`** — per-stock FDA decoration runs only for Healthcare-sector stocks (we don't even touch the DB for Tech / Other). Failure is non-fatal: the analysis just doesn't get an `fda` field, the catalyst silently doesn't fire.
+- **Daily cron** registered via the Phase 10 scheduler as `fda.refresh`.
+- **Health spec entry** for `fda` component on `/logs`. Log events whitelisted: `fda:refresh.start`, `fda:refresh.done`, `fda:refresh.empty-watchlist`, `fda:fetch.empty`.
+- **UI: `CATALYST_LABEL.fda_event = "Recent FDA drug approval"`** — surfaces in the existing star-tooltip. No new badge (per the design sign-off: tooltip-only).
+
+**Catalyst overlap with `positive_news` — intentional:**
+An FDA approval typically also surfaces in the company-news feed → Phase 4 may classify it as `regulatory_approval` → `positive_news` fires. Both fire simultaneously and a stock deserves 2 catalyst stars: openFDA confirms the approval happened (objective), news confirms the market noticed (sentiment). They're different signals, not double-counting.
+
+**Watchlist filter — design choice:**
+The `Healthcare` sector filter is applied at the cron level (DB `WHERE sector = "Healthcare"`), not at catalyst eval. Reason: the Analysis doesn't carry sector at eval time, and filtering at the source keeps the matching pipeline tiny. Side effect: tickers mis-categorised as `Tech` or `Other` are silently excluded — acceptable false negative.
+
+**Tests & coverage:**
+- **26 pure tests** in `test/lib/fda.test.ts` covering every normalise-name case, both matching tiers, ambiguity rejection, custom config, empty/edge inputs, KNOWN_FDA_APPLICANTS sanity.
+- **16 edge tests** in `test/lib/fda-source.test.ts` covering happy-path persist (brand + generic + no-name), Healthcare filter, unmatched-applicant counting, HTTP 404 / 5xx / network / parse failures, skip-on-missing-fields, AP-status-only filter, persist failure resilience, per-symbol read mapping.
+- **3 background-fetcher integration tests:** Healthcare stock with recent approval → catalyst fires; non-Healthcare stock → DB read skipped entirely; failed FDA lookup → analysis still cached.
+- **1 UI test** for the new tooltip label.
+- 746 tests pass total (698 + 48 new). Coverage **97.78 / 92.59 / 97.91 / 97.78** — all thresholds met.
+
+**Deferred:**
+- **Upcoming PDUFA / drug-trial calendar dates** — per the spec, openFDA exposes approvals reliably but upcoming PDUFA dates sparsely. Different data source needed (BioPharmCatalyst, ClinicalTrials.gov). Genuinely separate sub-phase if/when it matters.
+- **Hand-curating beyond the 20 big-pharma names** — mid-tier biotechs that don't match the normalised heuristic will produce false negatives. Phase 15 backtest will reveal whether that's a real problem; revisit then.
+- **De-duplication across openFDA brand/generic aliases** — currently we describe with the first brand or generic name and trust the application-number unique key. If a single approval appears multiple times in the openFDA response under different aliases, the unique-key constraint handles it on persist. Not seen empirically; flagging as theoretical.
 
 ### Effort: **1.5 days** (matched plan estimate).

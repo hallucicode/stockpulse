@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { ScannerView } from "@/components/scanner-view";
 import { useStore } from "@/hooks/use-store";
 import type { ScannerStock } from "@/hooks/use-store";
+import { CATALYST_CONFIG } from "@/lib/config";
 
 function makeStock(symbol: string, sector = "Tech", overrides: any = {}): ScannerStock {
   return {
@@ -321,6 +322,25 @@ describe("ScannerView", () => {
     );
   });
 
+  it("includes fda_event in the tooltip when the stock has a recent FDA approval (Phase 12)", () => {
+    useStore.setState({
+      scannerData: [
+        makeStock("MRK", "Healthcare", {
+          catalysts: {
+            score: 1,
+            present: ["fda_event"],
+            confidence: 1,
+          },
+        }),
+      ],
+    });
+    render(<ScannerView />);
+    const stars = screen.getByLabelText(/1 catalyst/);
+    expect(stars.getAttribute("aria-label")).toContain(
+      "Recent FDA drug approval"
+    );
+  });
+
   it("singular tooltip wording with a single catalyst", () => {
     useStore.setState({
       scannerData: [
@@ -383,8 +403,11 @@ describe("ScannerView", () => {
     const stars = screen.getByLabelText(/catalyst/);
     // No empty slots — fully maxed.
     expect(stars.textContent).not.toContain("☆");
-    // Filled count equals maxStars (5 today).
-    expect((stars.textContent ?? "").match(/★/g)?.length).toBe(5);
+    // Filled count equals CATALYST_CONFIG.maxStars (bumps over time
+    // as new catalyst types land — Phase 7=5, Phase 12=6).
+    expect((stars.textContent ?? "").match(/★/g)?.length).toBe(
+      CATALYST_CONFIG.maxStars
+    );
   });
 
   it("renders the options IV line + unusual call badge when present (Phase 8)", () => {

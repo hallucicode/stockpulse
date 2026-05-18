@@ -124,6 +124,17 @@ describe("evaluateCatalysts", () => {
     }
   });
 
+  it("flags fda_event when a recent approval is present (Phase 12)", () => {
+    const r = evaluateCatalysts({ fda: { hasRecentApproval: true } });
+    expect(r.present).toContain("fda_event");
+    expect(r.score).toBe(CATALYST_CONFIG.weights.fda_event);
+  });
+
+  it("does NOT flag fda_event when there's no recent approval", () => {
+    const r = evaluateCatalysts({ fda: { hasRecentApproval: false } });
+    expect(r.present).not.toContain("fda_event");
+  });
+
   it("aggregates multiple catalysts (sum of weights, distinct presence list)", () => {
     const info = evaluateCatalysts({
       earnings: { daysUntil: 10 },
@@ -231,10 +242,16 @@ describe("applyCatalystAdjustment", () => {
         sma200: 190,
         recentRunBars: 3,
       },
+      fda: {
+        hasRecentApproval: true,
+        lastApprovalAt: "2026-05-10T00:00:00Z",
+        description: "FDA approval: KEYTRUDA (BLA125514)",
+      },
     });
     const out = applyCatalystAdjustment(input);
-    expect(out.catalysts?.confidence).toBe(5);
-    expect(out.catalysts?.present.length).toBe(5);
+    expect(out.catalysts?.confidence).toBe(6);
+    expect(out.catalysts?.present.length).toBe(6);
     expect(out.catalysts?.present).toContain("sector_rotation");
+    expect(out.catalysts?.present).toContain("fda_event");
   });
 });

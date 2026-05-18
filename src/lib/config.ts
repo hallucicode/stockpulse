@@ -446,6 +446,52 @@ export interface SectorRotationConfig {
 // top of the already-adjusted technical score would double-count those same
 // signals. The weighted score is still exposed so the UI can sort/rank by
 // catalyst density.
+// ─── FDA drug-approval catalyst (Phase 12) — parameter type ───
+// Same pattern as the other configs: `as const` narrows the literal
+// types, but the pure functions accept the shape so tests can pass
+// shrunken configs without literal-mismatch errors.
+export interface FdaConfig {
+  refreshIntervalMs: number;
+  lookbackDays: number;
+  approvalWindowDays: number;
+  maxResultsPerFetch: number;
+  minMatchTokenLength: number;
+}
+
+// ─── FDA drug-approval catalyst (Phase 12) ───
+//
+// Daily pull of recently-approved drug applications from openFDA's
+// `/drug/drugsfda.json`, matched against the Healthcare-sector portion
+// of the watchlist. When a row exists in the `approvalWindowDays`
+// window for a symbol, the `fda_event` catalyst fires via Phase 7's
+// aggregator.
+//
+// Bias toward false negatives over false positives: a phantom catalyst
+// on the wrong ticker (e.g. matching "Merck KGaA" to MRK) is much worse
+// than a missed catalyst on the right one. See `fda.ts` for the
+// two-tier matching strategy (hand-curated known map + conservative
+// normalised match).
+export const FDA_CONFIG = {
+  // Daily refresh — FDA actions are infrequent and the response is small.
+  refreshIntervalMs: 24 * 60 * 60 * 1000,
+  // How far back to query openFDA on each refresh. Wider than
+  // `approvalWindowDays` so we still re-fetch yesterday's approvals if
+  // the cron missed a day.
+  lookbackDays: 45,
+  // How recent an approval has to be to fire the `fda_event` catalyst.
+  // Tight enough that the catalyst reflects a current event, not an
+  // old approval still on the books.
+  approvalWindowDays: 30,
+  // openFDA `limit` param. Single call returns up to this many rows;
+  // more than enough for one country's monthly approval volume (~30-60
+  // approvals per month at the FDA).
+  maxResultsPerFetch: 100,
+  // Minimum length of a normalised applicant token before it's allowed
+  // to anchor a watchlist match. Guards against catastrophic 2-3-letter
+  // overlaps (e.g. "co" matching every "Inc"-suffixed name).
+  minMatchTokenLength: 4,
+} as const;
+
 export interface CatalystConfig {
   earningsCatalystWindowDays: number;
   weights: {
@@ -454,6 +500,7 @@ export interface CatalystConfig {
     analyst_upgrade: number;
     positive_news: number;
     sector_rotation: number;
+    fda_event: number;
   };
   positiveNewsCategories: readonly string[];
   maxStars: number;
@@ -478,6 +525,11 @@ export const CATALYST_CONFIG = {
     // regardless of single-name story. Weight 1 because it isn't
     // single-name conviction the way an insider cluster is.
     sector_rotation: 1,
+    // Phase 12 — recent FDA drug approval. For big pharma this is one
+    // revenue stream among many (modest impact); for small biotech it
+    // can move a stock 10× overnight. Weight 1 conservatively, with
+    // Phase 15 backtest licensed to promote it if the evidence justifies.
+    fda_event: 1,
   },
   // Diagnosis categories that count as a positive news catalyst. Strong
   // positives only — neutral/informational categories (earnings_report,
@@ -491,9 +543,10 @@ export const CATALYST_CONFIG = {
     "buyback",
     "dividend_hike",
   ] as const,
-  // Cap on how many stars the UI ever renders. Today's catalyst types
-  // produce up to 4; FDA + sector rotation (Phase 7.1) extends to 5.
-  maxStars: 5,
+  // Cap on how many stars the UI ever renders. Bumped to 6 in Phase 12
+  // when fda_event landed. Must stay ≥ Object.keys(weights).length so a
+  // fully-lit stock isn't accidentally truncated.
+  maxStars: 6,
 } as const;
 
 // ─── Persisted logs ───
