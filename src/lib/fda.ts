@@ -177,6 +177,49 @@ export function findWatchlistMatch(
   return null;
 }
 
+/**
+ * Permissive token-overlap probe — used by the source module to decide
+ * "did this look like a real near-miss?" after `findWatchlistMatch`
+ * returned null.
+ *
+ * Returns the first watchlist row that shares any non-trivial
+ * (length ≥ 3) token with the normalised applicant. Returns null when
+ * there's no overlap at all (the common, expected case — the
+ * applicant is a drug company that simply isn't on the watchlist).
+ *
+ * Why a separate function (not just lower the threshold in
+ * `findWatchlistMatch`):
+ *   - Strict matcher: bias toward false negatives, refuse on
+ *     ambiguity. Drives the actual `fda_event` catalyst.
+ *   - This helper: bias toward true positives. Just answers "is there
+ *     a smoke signal that should prompt a curation update?" — never
+ *     fires a catalyst, only escalates a log entry.
+ *
+ * The 3-character minimum (vs 4 for the strict matcher) is the whole
+ * point: catches `"merck"` ↔ `"mrk"`-adjacent cases that the strict
+ * matcher rejects.
+ */
+export function hasWatchlistTokenOverlap(
+  applicantName: string,
+  watchlist: WatchlistRow[]
+): WatchlistRow | null {
+  const normApplicant = normaliseApplicantName(applicantName);
+  if (normApplicant === "") return null;
+  const applicantTokens = new Set(
+    normApplicant.split(/\s+/).filter((t) => t.length >= 3)
+  );
+  if (applicantTokens.size === 0) return null;
+  for (const row of watchlist) {
+    const wlTokens = normaliseApplicantName(row.name).split(/\s+/);
+    for (const token of wlTokens) {
+      if (token.length >= 3 && applicantTokens.has(token)) {
+        return row;
+      }
+    }
+  }
+  return null;
+}
+
 interface FdaEventLite {
   /** ISO date string of the approval. */
   date: string;

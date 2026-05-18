@@ -146,7 +146,7 @@ describe("refreshFdaApprovals — happy path", () => {
     expect(args.create.description).toBe("FDA approval (NDA999999)");
   });
 
-  it("counts unmatched applicants and logs match.skipped", async () => {
+  it("logs match.skipped at info when no watchlist token overlaps (the quiet case)", async () => {
     dbMock.watchlistStock.findMany.mockResolvedValue([
       { symbol: "MRK", name: "Merck & Co Inc", sector: "Healthcare" },
     ]);
@@ -170,6 +170,70 @@ describe("refreshFdaApprovals — happy path", () => {
       "fda",
       "match.skipped",
       expect.objectContaining({ applicant: "Some Tiny Bio Inc" })
+    );
+    // Crucially: this case must NOT fire the suspicious warn.
+    expect(loggerMock.log.warn).not.toHaveBeenCalledWith(
+      "fda",
+      "match.skipped.suspicious",
+      expect.anything()
+    );
+  });
+
+  it("escalates to match.skipped.suspicious (warn) when applicant overlaps a watchlist token", async () => {
+    // "Merck & Co" is in the watchlist with anchor token "merck".
+    // openFDA reports "MERCK GENERICS LLC" — strict matcher refuses
+    // (not in KNOWN map; whole-word containment of "merck" works
+    // here so this would actually match... let's pick a case the
+    // strict matcher refuses but the overlap probe accepts).
+    // Use a 3-char overlap: watchlist Vertex "Pharmaceuticals" →
+    // applicant contains "pharma" (3 chars overlap on the "vertex"
+    // anchor doesn't work; need a real 3-char-only overlap).
+    //
+    // Simpler: an ambiguous applicant — overlaps TWO watchlist
+    // companies' anchors. findWatchlistMatch returns null (ambiguity
+    // rule); hasWatchlistTokenOverlap returns the first hit.
+    dbMock.watchlistStock.findMany.mockResolvedValue([
+      { symbol: "AAA", name: "Genomic Biopharma Inc", sector: "Healthcare" },
+      { symbol: "BBB", name: "Genomic Therapeutics", sector: "Healthcare" },
+    ]);
+    global.fetch = vi.fn().mockResolvedValue(
+      mockFetchResponse({
+        results: [
+          {
+            application_number: "BLA42",
+            sponsor_name: "Genomic Pharmaceuticals",
+            submissions: [
+              { submission_status: "AP", submission_status_date: "20260415" },
+            ],
+          },
+        ],
+      })
+    );
+    const summary = await refreshFdaApprovals();
+    expect(summary).toMatchObject({ matched: 0, skippedUnmatched: 1 });
+    expect(dbMock.fdaEvent.upsert).not.toHaveBeenCalled();
+    // The actionable warn fired.
+    expect(loggerMock.log.warn).toHaveBeenCalledWith(
+      "fda",
+      "match.skipped.suspicious",
+      expect.objectContaining({
+        applicant: "Genomic Pharmaceuticals",
+        applicationNumber: "BLA42",
+        overlapsWith: expect.stringMatching(/^(AAA|BBB)$/),
+        hint: expect.stringContaining("KNOWN_FDA_APPLICANTS"),
+      })
+    );
+    // The hint MUST tell the operator what file to edit.
+    const warnCall = loggerMock.log.warn.mock.calls.find(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c: any[]) => c[1] === "match.skipped.suspicious"
+    );
+    expect(warnCall?.[2].hint).toContain("src/lib/fda.ts");
+    // And it must NOT also fire the quiet info — exactly one event.
+    expect(loggerMock.log.info).not.toHaveBeenCalledWith(
+      "fda",
+      "match.skipped",
+      expect.anything()
     );
   });
 

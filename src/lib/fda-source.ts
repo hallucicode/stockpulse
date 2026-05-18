@@ -21,7 +21,7 @@
 import { db } from "./db";
 import { log } from "./logger";
 import { FDA_CONFIG } from "./config";
-import { findWatchlistMatch } from "./fda";
+import { findWatchlistMatch, hasWatchlistTokenOverlap } from "./fda";
 
 const OPENFDA_BASE = "https://api.fda.gov/drug/drugsfda.json";
 
@@ -184,10 +184,28 @@ export async function refreshFdaApprovals(): Promise<RefreshSummary> {
     const match = findWatchlistMatch(r.sponsor_name, watchlist);
     if (!match) {
       skippedUnmatched++;
-      log.info("fda", "match.skipped", {
-        applicant: r.sponsor_name,
-        applicationNumber: r.application_number,
-      });
+      // Two-tier logging:
+      //   - If the applicant shares any token with a watchlist company
+      //     name (permissive 3-char overlap), this is a *suspicious*
+      //     near-miss that probably wants a curation update. Fire as
+      //     warn with an actionable hint so it stands out on /logs.
+      //   - Otherwise it's just a drug company that isn't on our
+      //     watchlist — expected, no action needed, info level.
+      const overlap = hasWatchlistTokenOverlap(r.sponsor_name, watchlist);
+      if (overlap) {
+        log.warn("fda", "match.skipped.suspicious", {
+          applicant: r.sponsor_name,
+          applicationNumber: r.application_number,
+          overlapsWith: overlap.symbol,
+          watchlistName: overlap.name,
+          hint: `Looks like ${overlap.symbol} (${overlap.name}) but the strict matcher refused. If this is a real match, add "${r.sponsor_name}" to KNOWN_FDA_APPLICANTS["${overlap.symbol}"] in src/lib/fda.ts.`,
+        });
+      } else {
+        log.info("fda", "match.skipped", {
+          applicant: r.sponsor_name,
+          applicationNumber: r.application_number,
+        });
+      }
       continue;
     }
 

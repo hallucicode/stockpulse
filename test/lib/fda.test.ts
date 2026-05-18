@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   evaluateFdaActivity,
   findWatchlistMatch,
+  hasWatchlistTokenOverlap,
   KNOWN_FDA_APPLICANTS_LIST,
   normaliseApplicantName,
 } from "@/lib/fda";
@@ -145,6 +146,60 @@ describe("findWatchlistMatch — Tier 2: normalised match", () => {
   it("handles empty watchlist", () => {
     const r = findWatchlistMatch("Pfizer Inc", []);
     expect(r).toBeNull();
+  });
+});
+
+describe("hasWatchlistTokenOverlap", () => {
+  const watchlist = [
+    { symbol: "MRK", name: "Merck & Co Inc", sector: "Healthcare" },
+    { symbol: "VRTX", name: "Vertex Pharmaceuticals Inc", sector: "Healthcare" },
+  ];
+
+  it("returns the matched row when the applicant shares a ≥3-char token", () => {
+    const r = hasWatchlistTokenOverlap("MERCK GENERICS LLC", watchlist);
+    expect(r?.symbol).toBe("MRK");
+  });
+
+  it("returns null when there's no shared token (the common case)", () => {
+    const r = hasWatchlistTokenOverlap("Some Tiny Bio Inc", watchlist);
+    expect(r).toBeNull();
+  });
+
+  it("uses a more permissive 3-char threshold than findWatchlistMatch (4)", () => {
+    // Watchlist name normalises to a 3-char token "abc".
+    const wl = [{ symbol: "ABC", name: "Abc Inc", sector: "Healthcare" }];
+    // Strict matcher rejects (anchor < 4 chars).
+    expect(findWatchlistMatch("Abc Pharmaceuticals", wl)).toBeNull();
+    // Overlap probe finds it.
+    expect(hasWatchlistTokenOverlap("Abc Pharmaceuticals", wl)?.symbol).toBe(
+      "ABC"
+    );
+  });
+
+  it("returns null for empty applicant", () => {
+    expect(hasWatchlistTokenOverlap("", watchlist)).toBeNull();
+  });
+
+  it("returns null for empty watchlist", () => {
+    expect(hasWatchlistTokenOverlap("Merck Sharp & Dohme", [])).toBeNull();
+  });
+
+  it("returns null when applicant tokens are all under 3 chars", () => {
+    // After normalisation strips "co inc" → only "a b" left; both
+    // tokens < 3 chars, so no anchor.
+    const r = hasWatchlistTokenOverlap("A B Co Inc", watchlist);
+    expect(r).toBeNull();
+  });
+
+  it("works the suspicious near-miss case findWatchlistMatch refuses", () => {
+    // VRTX is NOT in KNOWN_FDA_APPLICANTS_LIST for this test fixture;
+    // strict matcher uses Tier 2 token-containment with 4-char anchor
+    // "vertex". A misspelling 'verteks' wouldn't match (different
+    // token entirely), but a string containing 'pharma' alone would
+    // (3-char overlap with 'pharmaceuticals' tokens) — let's verify
+    // the helper is permissive enough to catch that.
+    const r = hasWatchlistTokenOverlap("vertex BioPharma LLC", watchlist);
+    expect(r?.symbol).toBe("VRTX");
   });
 });
 
