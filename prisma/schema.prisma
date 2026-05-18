@@ -272,6 +272,14 @@ model RecommendationLog {
   compositeScore  Int
   recommendation  String   // "STRONG BUY" | "BUY" | "HOLD" | "SELL" | "STRONG SELL"
   regime          String?  // null when regime cron hasn't run yet
+  /// JSON-shape version stamp. Always set to the writer's current
+  /// `SCHEMA_VERSION` (see `src/lib/recommendation-log.ts`). Bump that
+  /// constant when we make a breaking change to the JSON shape that
+  /// older readers (Phase 15 backtest replays) can't interpret without
+  /// branching logic. Backfilling this onto millions of historical
+  /// rows would be an expensive data migration — pinned at write time
+  /// instead.
+  schemaVersion   Int      @default(1)
   /// SHA-1 of the canonical change-detection key (score, rec, regime,
   /// catalysts.present, qualityVeto.reason). Used by maybeLogRecommendation
   /// to skip writes when nothing externally-observable changed.

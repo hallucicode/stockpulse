@@ -30,6 +30,7 @@ import {
   hashRecommendationKey,
   maybeLogRecommendation,
   pruneOldRecommendations,
+  SCHEMA_VERSION,
 } from "@/lib/recommendation-log";
 import { RECOMMENDATION_LOG_CONFIG } from "@/lib/config";
 import type { Analysis } from "@/types";
@@ -191,6 +192,13 @@ describe("maybeLogRecommendation", () => {
     expect(data.signalBreakdown).toContain("compositeScore");
   });
 
+  it("stamps every inserted row with the current SCHEMA_VERSION", async () => {
+    dbMock.recommendationLog.findFirst.mockResolvedValue(null);
+    await maybeLogRecommendation("AAPL", baseAnalysis());
+    const data = dbMock.recommendationLog.create.mock.calls[0][0].data;
+    expect(data.schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
   it("skips the write when the canonical hash matches the most recent row", async () => {
     const a = baseAnalysis();
     dbMock.recommendationLog.findFirst.mockResolvedValue({
@@ -252,6 +260,7 @@ describe("getAuditTrail", () => {
         compositeScore: 30,
         recommendation: "BUY",
         regime: "trending_up",
+        schemaVersion: 1,
         analysisHash: "abc",
         signalBreakdown: JSON.stringify({ symbol: "AAPL", compositeScore: 30 }),
       },
@@ -260,6 +269,7 @@ describe("getAuditTrail", () => {
         compositeScore: 50,
         recommendation: "STRONG BUY",
         regime: "trending_up",
+        schemaVersion: 1,
         analysisHash: "def",
         signalBreakdown: JSON.stringify({ symbol: "AAPL", compositeScore: 50 }),
       },
@@ -272,12 +282,29 @@ describe("getAuditTrail", () => {
       compositeScore: 30,
       recommendation: "BUY",
       regime: "trending_up",
+      schemaVersion: 1,
     });
     expect(rows[0].analysis).toMatchObject({ symbol: "AAPL", compositeScore: 30 });
 
     // Verify ordering option propagated.
     const where = dbMock.recommendationLog.findMany.mock.calls[0][0];
     expect(where.orderBy).toEqual({ timestamp: "asc" });
+  });
+
+  it("surfaces an older schemaVersion verbatim (so Phase 15 can branch)", async () => {
+    dbMock.recommendationLog.findMany.mockResolvedValue([
+      {
+        timestamp: new Date(),
+        compositeScore: 25,
+        recommendation: "BUY",
+        regime: null,
+        schemaVersion: 1, // imagine SCHEMA_VERSION has since been bumped
+        analysisHash: "x",
+        signalBreakdown: JSON.stringify({ legacy: true }),
+      },
+    ]);
+    const rows = await getAuditTrail("OLD");
+    expect(rows[0].schemaVersion).toBe(1);
   });
 
   it("uses defaultReadWindowDays when no from is supplied", async () => {
@@ -323,6 +350,7 @@ describe("getAuditTrail", () => {
         compositeScore: 30,
         recommendation: "BUY",
         regime: null,
+        schemaVersion: 1,
         analysisHash: "x",
         signalBreakdown: "{ not json",
       },

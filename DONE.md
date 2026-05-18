@@ -551,7 +551,7 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 **Why this had to happen before Phase 15:** before this phase, `AnalysisCache` held only the *current* analysis per symbol. When a stock moved BUY → HOLD → BUY → STRONG BUY over a week, the upserts overwrote each transition. Phase 15 (backtest) needs the opposite — a permanent, replayable timeline. Phase 18 (decay monitor) needs the same data to compare live vs backtest. Without Phase 11, both downstream phases would be blocked on a missing data source.
 
 **Shipped:**
-- **New Prisma model `RecommendationLog`** — id / symbol / timestamp / compositeScore (Int) / recommendation / regime / analysisHash (SHA-1 of canonical key) / signalBreakdown (full-analysis JSON snapshot). Indexed on `(symbol, timestamp)` for the read API and on `timestamp` alone for the prune cron. `npx prisma db push` applied to dev DB.
+- **New Prisma model `RecommendationLog`** — id / symbol / timestamp / compositeScore (Int) / recommendation / regime / `schemaVersion` (Int, default 1) / analysisHash (SHA-1 of canonical key) / signalBreakdown (full-analysis JSON snapshot). Indexed on `(symbol, timestamp)` for the read API and on `timestamp` alone for the prune cron. `npx prisma db push` applied to dev DB.
 - **`src/lib/recommendation-log.ts`** (100% line coverage, 94.11% branch). Four exports:
   - `hashRecommendationKey(analysis)` — pure. SHA-1 of `{score, recommendation, regime, sorted catalysts.present, qualityVeto.reason}`. Set semantics for catalysts (sorted before hashing) so list ordering noise can't trigger a write.
   - `maybeLogRecommendation(symbol, analysis)` — fetches the most recent row's hash for this symbol, compares, inserts only when different. Returns `{ wrote: boolean; reason: "first-row" | "changed" | "unchanged" | "error" }`. Best-effort: any DB failure is logged via `audit-log:write.failure` and the function returns `{ wrote: false, reason: "error" }` — the fetcher never crashes from audit-log issues.
@@ -567,15 +567,16 @@ The user-stated bar: **"stock has to have earnings, filter out garbage."**
 **Snapshot field design (deliberate choice):**
 - Full `JSON.stringify(analysis)` minus the `signals[]` array. `signals[]` is UI-derived and reconstructible from the rest of the Analysis; persisting it would inflate row size 2-3× with zero replay value.
 - Forward-compatible: when new fields land in `Analysis` (Phase 13 tax info, Phase 14 trade-card extras), they appear in new rows automatically. When Phase 15 reads old rows, missing fields default to `undefined`.
+- **`schemaVersion` (Int, default 1) stamped on every row.** Initially I deferred this as "add when it becomes useful" but the user's correction landed it now: backfilling a version column onto millions of accumulated rows would be a much more expensive data migration than adding the column day-one. Bump `SCHEMA_VERSION` in `recommendation-log.ts` when we ever make a breaking change to the JSON shape; Phase 15 reader can then branch on `row.schemaVersion`. Additive `Analysis` changes do NOT need a bump — missing fields naturally default to `undefined` on read.
 
 **Tests & coverage:**
-- **22 new pure tests** for `recommendation-log.ts` (hash dedup across every key-change vector, hash invariance to catalyst-list ordering and signal-weight noise, maybeLog first-row / unchanged / changed / error paths, signals[] stripping, score-rounding to Int, getAuditTrail mapping + defaults + ISO-string acceptance + max-rows cap + JSON parse-fallback, prune counting + failure handling).
+- **24 new pure tests** for `recommendation-log.ts` (hash dedup across every key-change vector, hash invariance to catalyst-list ordering and signal-weight noise, maybeLog first-row / unchanged / changed / error paths, signals[] stripping, score-rounding to Int, `schemaVersion` stamping on write + verbatim pass-through on read, getAuditTrail mapping + defaults + ISO-string acceptance + max-rows cap + JSON parse-fallback, prune counting + failure handling).
 - **9 new API tests** for `/api/audit/[symbol]` (400 on bad symbol, uppercase normalisation, happy-path rows + count, empty-history symbol, query-param forwarding, 400 on bad from/to, negative-limit normalisation, 500 on internal error).
 - **3 new `background-fetcher` integration tests**: first-observation writes a row; identical-analysis re-runs write zero rows; `RecommendationLog` write failure doesn't break `AnalysisCache` upsert.
-- 696 tests pass total (662 + 34 new). Coverage **97.69 / 92.45 / 97.83 / 97.69** — all thresholds met. `recommendation-log.ts` itself is 100 / 94.11.
+- 698 tests pass total (662 + 36 new). Coverage above all thresholds. `recommendation-log.ts` itself is 100 / 94.11.
 
 **Deferred:**
-- **Paper-trade carve-out in the prune cron** — until `PaperTrade` exists (Phase 16), can't filter on it. Marked with a clear `TODO (Phase 16)` comment in `pruneOldRecommendations()`.
+- **Paper-trade carve-out in the prune cron** — until `PaperTrade` exists (Phase 16), can't filter on it. The `TODO (Phase 16)` comment in `pruneOldRecommendations()` is now backed by a concrete **Phase 16.1** entry in `IMPLEMENTATION_PLAN.md` so the dependency can't slip again.
 - **Audit-trail UI** — JSON endpoint is enough for Phase 15 (backtest) and Phase 18 (decay monitor) to consume. A `/audit/[symbol]` page rendering the timeline as a chart can come later if a human ever wants to eyeball it.
 - **Cross-symbol queries** (e.g. "every BUY recommendation made on 2026-02-15") — not needed by Phase 15/18 directly. If a future feature wants it, the existing `(timestamp)` index already supports it.
 

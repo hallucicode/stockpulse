@@ -26,6 +26,25 @@ import { RECOMMENDATION_LOG_CONFIG } from "./config";
 import type { Analysis } from "@/types";
 
 /**
+ * JSON-shape version stamped on every row. Bump this when a breaking
+ * change to the persisted `signalBreakdown` shape lands — e.g. a field
+ * rename or a unit change that older Phase 15 readers can't infer.
+ *
+ * Pinned at write time (rather than backfilled retroactively) because
+ * once we have millions of rows the migration cost dominates the cost
+ * of adding the column. Bumping this in code requires:
+ *   1. Increment the constant.
+ *   2. Phase 15 reader switches on `row.schemaVersion` to handle old
+ *      and new shapes.
+ *   3. Existing rows keep their old version — they're still readable
+ *      via the v1 branch.
+ *
+ * Additive changes to `Analysis` (new optional fields) do NOT require
+ * a bump; missing fields naturally default to undefined on read.
+ */
+export const SCHEMA_VERSION = 1 as const;
+
+/**
  * Canonical change-detection key. Hash the *externally-observable*
  * state — not every signal weight bouncing around with noise, just the
  * fields a human (or backtest) would describe as "the system's view of
@@ -86,6 +105,7 @@ export async function maybeLogRecommendation(
         compositeScore: Math.round(analysis.compositeScore),
         recommendation: analysis.recommendation,
         regime: analysis.regime?.regime ?? null,
+        schemaVersion: SCHEMA_VERSION,
         analysisHash: hash,
         signalBreakdown: snapshotForPersistence(analysis),
       },
@@ -114,6 +134,12 @@ export interface AuditRow {
   compositeScore: number;
   recommendation: string;
   regime: string | null;
+  /**
+   * The `SCHEMA_VERSION` the writer was on when this row was persisted.
+   * Phase 15 backtest replays branch on this to handle old shapes
+   * after breaking-change bumps.
+   */
+  schemaVersion: number;
   analysisHash: string;
   /** Parsed back into the structured shape — easier for downstream consumers. */
   analysis: unknown;
@@ -154,6 +180,7 @@ export async function getAuditTrail(
     compositeScore: r.compositeScore,
     recommendation: r.recommendation,
     regime: r.regime,
+    schemaVersion: r.schemaVersion,
     analysisHash: r.analysisHash,
     analysis: safeParse(r.signalBreakdown),
   }));
