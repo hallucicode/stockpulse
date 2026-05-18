@@ -6,7 +6,20 @@ export default defineConfig({
     jsx: "automatic",
   },
   test: {
-    environment: "jsdom",
+    // Default to `node` so the 39 of 47 test files that don't touch
+    // the DOM (pure modules, edge modules, Next API route handlers)
+    // skip the ~3-4s of cumulative jsdom-bootstrap each file would
+    // otherwise pay. `environmentMatchGlobs` below opts the React
+    // component + hook tests back into jsdom.
+    //
+    // Measured baseline (before this change): test:coverage took
+    // ~139s wall clock with `environment: "jsdom"` for all 47 files.
+    // Most of the time was env setup, not test work.
+    environment: "node",
+    environmentMatchGlobs: [
+      ["test/components/**", "jsdom"],
+      ["test/hooks/**", "jsdom"],
+    ],
     setupFiles: ["./test/setup.ts"],
     globals: true,
     // Don't pick up Claude Code worktree copies (each one ships duplicate
