@@ -54,6 +54,61 @@ model Alert {
   createdAt  DateTime @default(now())
 }
 
+/// Daily FX-rate cache (Phase 13 — Box 3 helper).
+///
+/// Sourced from the Frankfurter API (which wraps ECB official daily
+/// reference rates). One row per (date, fromCurrency, toCurrency) so
+/// any historical-as-of lookup is a cheap indexed read. The fx cron
+/// upserts today's rate every day; older rows are kept so peildatum
+/// snapshots can later recompute against the rate as it was on that
+/// date.
+///
+/// For v1 we only fetch USD→EUR. The schema is currency-pair-shaped
+/// so a future expansion (GBP, CAD, etc.) doesn't require migration.
+model FxRate {
+  id           String   @id @default(cuid())
+  date         DateTime // ECB reference date (UTC midnight)
+  fromCurrency String   // "USD"
+  toCurrency   String   // "EUR"
+  rate         Float    // e.g. 0.9215 means 1 USD = 0.9215 EUR
+  fetchedAt    DateTime @default(now())
+
+  @@unique([date, fromCurrency, toCurrency])
+  @@index([fromCurrency, toCurrency, date])
+}
+
+/// Permanent peildatum / point-in-time portfolio valuation
+/// (Phase 13 — Box 3 helper).
+///
+/// Used for annual aangifte inkomstenbelasting: the Belastingdienst
+/// wants total portfolio value on January 1 of the tax year. The user
+/// can also snapshot any other date for their own records (year-end,
+/// monthly tracking, etc.).
+///
+/// Append-only: never updated, never pruned. Each row is the full
+/// valuation at a moment, so multiple snapshots for the same date are
+/// allowed (e.g. one labelled "auto", another labelled "after manual
+/// adjustments"). `label` distinguishes them in the UI.
+///
+/// `perPositionJson` carries the full breakdown — symbol, shares,
+/// price (USD), value USD, value EUR — at snapshot time. Forward-
+/// compatible (new fields appear in new rows; readers tolerant of
+/// missing fields in old rows).
+model Box3Snapshot {
+  id              String   @id @default(cuid())
+  date            DateTime // The peildatum (UTC midnight)
+  taxYear         Int      // E.g. 2026 for the 2025 peildatum
+  label           String   @default("") // User-supplied free text
+  totalValueUsd   Float
+  totalValueEur   Float
+  usdEurRate      Float    // The rate as of `date`
+  perPositionJson String   // JSON-stringified per-position breakdown
+  createdAt       DateTime @default(now())
+
+  @@index([taxYear])
+  @@index([date])
+}
+
 /// Cached price snapshots to avoid hitting APIs too often
 model PriceCache {
   id        String   @id @default(cuid())

@@ -107,6 +107,13 @@ const fdaSourceMock: any = {
 };
 vi.mock("@/lib/fda-source", () => fdaSourceMock);
 
+// FX source (Phase 13).
+const fxSourceMock: any = {
+  refreshUsdEurRate: vi.fn().mockResolvedValue(null),
+  getLatestUsdEurRate: vi.fn().mockResolvedValue(null),
+};
+vi.mock("@/lib/fx-source", () => fxSourceMock);
+
 // Build a fresh, validation-passing history. Tests that want to trigger the
 // data-quality firewall override this explicitly.
 function freshHistory(bars = 10) {
@@ -186,6 +193,8 @@ beforeEach(() => {
     duration: 0,
   });
   fdaSourceMock.getRecentApprovalsForSymbol = vi.fn().mockResolvedValue([]);
+  fxSourceMock.refreshUsdEurRate = vi.fn().mockResolvedValue(null);
+  fxSourceMock.getLatestUsdEurRate = vi.fn().mockResolvedValue(null);
   marketMock.getHistory = vi.fn();
   analysisMock.analyzeStock = vi.fn();
   vi.spyOn(console, "log").mockImplementation(() => {});
