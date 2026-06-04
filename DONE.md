@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 13 (~44.5 days of build time).
+**Done so far:** Phases 0 through 14 (~47 days of build time).
 
 ---
 
@@ -677,3 +677,69 @@ A jurisdictional note was added to `IMPLEMENTATION_PLAN.md`'s intro so future ph
 - **GBP, CAD, other quote currencies** — schema is currency-pair-shaped so adding one is a config tweak. YAGNI today.
 
 ### Effort: **2 days** (rescoped from 4 — matched the rescoped estimate).
+
+---
+
+## Phase 14 — Trade card UI ✅ DONE *(was "Phase 10")*
+
+**Goal recap:** replace the badge-soup `StockCard` layout in the scanner with a structured, labelled-row card that's faster to scan, exposes risk-based position sizing, and offers a "Copy ticket" export action.
+
+**Two scope-tightening calls during planning:**
+
+1. **The "Tax" row was dropped entirely.** The original mock-up included a "Tax: ⚠ would be short-term (held 184d)" row. That's US capital-gains framing — irrelevant under NL Box 3 (Phase 13 established the jurisdictional context). Leaving the row in would have shipped misleading per-trade tax noise. Phase 13's portfolio panel already shows the only Box 3 number that matters: year-end value × deemed-return × tax rate.
+2. **Position sizing uses risk-based fixed-fractional** (1% of portfolio per trade, capped at 10% per position) — not equal-weight, not score-weighted Kelly. Risk-based auto-scales to volatility (a tight-stop name gets clipped by the position cap, a wide-stop name gets sized down by the per-share risk). Kelly was rejected because it would tune sizing off the composite score *before* Phase 15 has validated whether that score predicts outcomes — premature.
+
+**Shipped:**
+- **`src/lib/position-sizing.ts`** (pure, 100% covered) — `computePositionSize({ portfolioValueUsd, entry, stop, riskPct?, maxPositionPct? })` returns `{ shares, dollarValue, portfolioPct, cappedByPositionLimit } | null`. Returns `null` on every degenerate input (portfolio ≤ 0, entry ≤ stop, NaN, Infinity, zero shares after flooring) rather than silently returning 0 — UI hides the size row instead of printing "0 shares ($0)".
+- **`src/lib/trade-rationale.ts`** (pure, 100% covered) — `buildWhyCheap(analysis)` cascade. Specificity-ordered: `sector_selloff` diagnosis > `earnings_miss` / `analyst_downgrade` > sector ETF turning up > `trending_down` regime (relative-strength play) > technical-only with negative dayChange > ≥2 catalyst confidence. Explicitly does NOT invent a rationale on fraud / guidance_cut / lawsuit (those are red-flag categories; the diagnosis chip is the warning). Returns `null` when nothing diagnostic is present — UI hides the row.
+- **`src/lib/regime-compatibility.ts`** (pure, 100% covered) — `regimeFitsSignal(recommendation, regime)` returns `{ ok, note }`. `high_vol_crisis` flags every recommendation. BUY/STRONG BUY in `trending_down` and SELL/STRONG SELL in `trending_up` flagged as counter-trend headwinds. HOLD and missing regime always pass. Drives the ✓/⚠ icon next to the regime label in the trade card header.
+- **`src/components/trade-card.tsx`** — structured-layout card. Header with symbol, sector chip, OWNED chip, name, regime + ✓/⚠, recommendation badge, score gauge. Then labelled rows (each hidden when its data is absent): Why cheap? · Catalysts (catalyst types joined inline) · Options (IV + IV rank with cheap/expensive flavour + P/C) · Diagnosis (emoji + short label for actionable categories — `technical_only` muted) · Entry / Stop / Target / R:R · Size (shares + $ + portfolio % + "(capped)" marker when position cap kicked in) · Confidence stars. "Copy ticket" button copies plain-text trade ticket to clipboard with `navigator.clipboard.writeText`, toasts success or failure.
+- **View-mode toggle in `scanner-view.tsx`** — `compact` (the existing `StockCard`, preserved verbatim — no regressions) vs `detailed` (the new `TradeCard`). Toggle button sits next to sort controls. `useViewMode` custom hook persists choice to `localStorage.scanner-view-mode`. Hydration-safe: reads in `useEffect`, not during render. Defaults to `detailed`. Defensive against `localStorage` throwing in private-mode browsers (catches; falls back to in-memory mode flip).
+- **Portfolio total passed to `TradeCard`** for sizing. Empty portfolio falls back to `RISK_CONFIG.defaultPortfolioValue` so the first-trade user still sees a representative example.
+
+**Tests & coverage:**
+- **18 position-sizing tests** — happy path (uncapped, capped, custom riskPct, custom maxPositionPct, default config); null returns (zero/negative portfolio, entry=stop, stop>entry, entry=0, stop=0/negative, riskPct=0/negative, maxPositionPct=0, NaN, Infinity, zero shares after flooring); sanity (integer shares, defaultPortfolioValue first-trade case).
+- **12 trade-rationale tests** — every cascade branch hit explicitly, ordering precedence (diagnosis beats sector rotation beats regime), confidence-1 returns null, fraud/guidance_cut/lawsuit never invent a rationale, technical_only without negative dayChange returns null.
+- **8 regime-compatibility tests** — undefined regime ok, HOLD in every regime ok, high_vol_crisis flags everything, BUY in trending_down flagged, SELL in trending_up flagged, BUY in trending_up passes, SELL in trending_down passes, every recommendation in ranging passes.
+- **14 trade-card tests** — full layout render, every row independently hidden when data absent, ⚠ icon for headwind regime, OWNED chip when in portfolio, click navigates to detail, Copy ticket writes clipboard + does NOT navigate (stopPropagation), Copy ticket failure toasts error, uncapped size renders without "(capped)" marker, size hidden when sizing returns null, options line null-rank/expensive-flavour/neutral-flavour/null-atmIV branches, diagnosis row hidden for technical_only.
+- **7 scanner-view toggle tests** (added to the existing 30 — total 37 in the file) — default to detailed when localStorage empty, reads compact from localStorage on mount, toggle switches mode and persists, ignores unrecognised stored value, tolerates `setItem` throwing (in-memory toggle still works), tolerates `getItem` throwing (falls back to default), portfolioValueUsd is computed from store and reaches TradeCard sizing math.
+- **872 tests pass total** (was 813). Coverage **97.95 / 92.93 / 98.11 / 97.95** — all thresholds met.
+
+**Deferred (out of scope, candidates for future small follow-ups):**
+- **User-tunable risk knobs** in the UI — for now `maxRiskPerTrade` / `maxPositionPct` are config constants. A simple settings panel would let the user dial 1% → 0.5% before Phase 16 (paper trading) goes live.
+- **Portfolio-level sizing constraints** (e.g. max sector exposure across positions, not just per-position cap) — useful once portfolio has more than ~5 names.
+- **LLM-generated "Why cheap?"** — current rule-based cascade is intentional; LLM is Phase 21.
+- **Snapshot tests for permutation grids** (the plan mentioned them). Skipped because explicit per-row branch tests are more diagnostic when one fails. Could be added if visual-regression matters.
+- **Multi-broker ticket-export formats** — plain text only. JSON / IBKR-compatible / Tradingview formats are a small future iteration if anyone actually wants them.
+
+### Effort: **2 days** (vs 3 estimated — the existing `StockCard` already shipped most of the data the mock-up wanted; Phase 14 was 60% restructure / sizing math, 40% wiring).
+
+---
+
+### Phase 14 follow-up — in-PR rework after UI review
+
+After the first commit hit the PR, real-user testing surfaced two concrete defects worth fixing before merge:
+
+1. **Detailed view was less informative than Compact.** The `StockCard` carried depth via hover tooltips (catalyst names, $-values, firm names, full vol/OI numbers, full diagnosis rationale). The first cut of `TradeCard` rolled that data into terse strings ("Earnings · Insider cluster · Upgrade") and dropped the tooltips entirely. Switching to Detailed actually *lost* information. Also: the top-3 technical signal badges (RSI / Bollinger / MACD) from the StockCard's bottom row were not carried over to TradeCard at all — straight-up missing.
+2. **Compact view (StockCard) had a structural layout bug.** Two-column flex layout with a much-taller right column (recommendation, score, 5–8 badges, vol, timestamp) and a short left column (symbol, name, price) created vertical dead space, and the full-width signal/risk rows below reset the alignment. Looked broken.
+
+**Fix shipped on the same branch (PR still open):**
+
+- **TradeCard rows now inline the depth:**
+  - Catalysts row builds per-catalyst chips from real fields, not a static label map. Each chip carries the most useful single fact: `📅 Earnings 12d (BMO)` · `👥 3 insiders ($450k)` · `⬆ Morgan Stanley: Hold→Overweight` · `🔄 XLV turning up` · `💊 FDA approval`. Insider $-values format with k/M suffix (`$450k`, `$2.4M`). Firm legal-suffix stripping (`Goldman Sachs Inc → Goldman Sachs`) for chip width. Falls back to `latest.action` text when `fromGrade`/`toGrade` are null.
+  - Diagnosis row now inlines `a.diagnosis.rationale`: `🌊 Sector dip — Semis -8% week`.
+  - Options row appends inline `⚡ unusual calls` / `🛡 unusual puts` flags when present.
+  - **New Signals row** renders top-3 from `a.signals`, coloured by signal type (buy = emerald `⊕`, sell = rose `⊖`, neutral = slate `·`) with full `s.detail` in the title tooltip. Closes the data gap vs StockCard.
+  - Defensive: catalyst chips whose source data is missing (e.g. `present` includes `insider_cluster` but `a.insiders` is undefined) are skipped, and the row hides entirely if all chips drop to null.
+- **Compact view rebuilt as a real table** (`src/components/scanner-table.tsx`). Columns: Sym · Sector · Rec · Score · Price · Day % · R:R · Cat. Sortable visual order matches the existing sort buttons. One row per stock. Clickable rows navigate to detail. OWNED dot inline next to the symbol. R:R shows `—` when no risk packet (column stays aligned). Catalyst column shows confidence stars. Designed for "scan 50 names at once" — no more broken two-column layout, no dead space.
+- **`StockCard` and its helpers fully deleted** (`DIAGNOSIS_STYLE`, local `CATALYST_LABEL`, `ConfidenceStars`, `OptionsLine`, `DiagnosisBadge`, `timeAgo`, `useNow`, and the unused `Sparkline` import). `scanner-view.tsx` dropped from 587 lines to 268 lines.
+
+**Tests updated:**
+- TradeCard: 14 → 21 tests. New: insider $-value formatting (k vs M vs zero-suppression), analyst grade vs action fallback, sector-rotation / FDA chip rendering, defensive null-chip dropping, unusual-flag inline rendering, signals row hidden when empty.
+- ScannerTable: new 9-test file covering header rendering, one-row-per-stock, click-to-detail, OWNED marker, recommendation colour coding, day-change colour, R:R column with both data and `—` empty state, empty-state, catalyst star column.
+- scanner-view: 37 → 19 tests. Deleted 18 tests that asserted StockCard-specific markup (timeAgo, individual badges, badge tooltips, IV line, unusual badges, stop/target row) — that behaviour is now covered in `trade-card.test.tsx` and `scanner-table.test.tsx`, so duplicating the assertions in scanner-view was noise. scanner-view tests now focus on what the view itself owns: filtering, sorting, pagination, search, news banner, the layout toggle.
+- **870 tests pass total** (was 872 before the rework — net -2 because the kept scanner-view tests now exercise TradeCard/ScannerTable indirectly rather than the deleted ones doing it explicitly). Coverage **98.25 / 92.97 / 98.42 / 98.25** — actually went up because the dead StockCard helpers no longer drag the per-file averages down.
+
+**Effort for the rework:** ~3 hours.
+
+### Total Phase 14 effort: **2.5 days** (vs 3 estimated). The first cut was 2 days; the in-PR rework was the second half-day. PR was held open through the rework; merge happens once you sign off on this updated state.
