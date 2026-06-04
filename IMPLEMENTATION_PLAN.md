@@ -379,6 +379,14 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 - Block-trade detection in options (Phase 8 deferral) — needs paid Polygon / CBOE data.
 - Greeks beyond IV (delta / gamma / theta / vega) — compute when Phase 14 trade card needs them.
 
+### Box 3 helper (Phase 13 follow-ups)
+- **Stale-rates warning banner.** `BOX3_CONFIG` (heffingsvrij, deemed-return rate, tax rate) is pinned to a single tax year and needs a manual yearly bump. If the config is older than ~18 months, show a banner on the Box 3 panel ("Rates last updated YYYY-MM — please verify against current Belastingdienst figures"). Cheap to build (`BOX3_CONFIG.ratesLastUpdated` constant + a date check in `Box3Panel`); meaningful safety net if a yearly update gets missed. Promote to a phase only if a yearly bump actually gets forgotten — otherwise low priority.
+- Partner-pooling (heffingsvrij doubles for fiscal partners).
+- Multi-currency beyond USD/EUR (GBP/CHF positions if the universe ever broadens).
+- Auto-snapshot cron on Jan 1 (currently a manual button click).
+- `/box3` history page surfacing the `Box3Snapshot` rows (API exists; no UI yet).
+- Secondary FX source behind `getLatestUsdEurRate` (ECB direct / exchangerate.host) for Frankfurter outages.
+
 ### Infrastructure (further out)
 - Sentry / Datadog for production error tracking + per-API latency.
 - Proper secret management (Doppler / 1Password Connect) before any prod deploy.
