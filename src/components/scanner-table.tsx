@@ -40,6 +40,23 @@ function recColor(rec: ScannerStock["analysis"]["recommendation"]): string {
   }
 }
 
+/**
+ * Map a -100..+100 composite score to the same red→yellow→green hue
+ * used by `ScoreGauge` in the detailed card, so the two views stay
+ * visually consistent.
+ */
+function scoreColor(score: number): string {
+  const clamped = Math.max(-100, Math.min(100, score));
+  const normalized = (clamped + 100) / 200; // 0..1
+  const hue = normalized * 120; // 0 = red, 60 = yellow, 120 = green
+  return `hsl(${hue}, 80%, 55%)`;
+}
+
+/** "+62", "0", "-30" — explicit + for positives, native - for negatives. */
+function formatSignedScore(score: number): string {
+  return `${score > 0 ? "+" : ""}${score.toFixed(0)}`;
+}
+
 export function ScannerTable({ stocks }: Props) {
   const { setView, setSelectedSymbol, portfolio } = useStore();
   const ownedSet = new Set(portfolio.map((p) => p.symbol));
@@ -100,8 +117,11 @@ export function ScannerTable({ stocks }: Props) {
                 <td className={`px-2 py-1.5 ${recColor(a.recommendation)}`}>
                   {a.recommendation}
                 </td>
-                <td className="px-2 py-1.5 text-right font-mono">
-                  {score.toFixed(0)}
+                <td
+                  className="px-2 py-1.5 text-right font-mono font-bold"
+                  style={{ color: scoreColor(score) }}
+                >
+                  {formatSignedScore(score)}
                 </td>
                 <td className="px-2 py-1.5 text-right font-mono">
                   ${(a.price ?? 0).toFixed(2)}

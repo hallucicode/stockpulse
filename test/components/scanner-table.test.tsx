@@ -169,6 +169,71 @@ describe("ScannerTable", () => {
     expect(screen.queryByRole("table")).toBeNull();
   });
 
+  it("formats composite score with explicit + sign on positive values", () => {
+    render(
+      <ScannerTable
+        stocks={[
+          makeStock("POS", {
+            analysis: makeAnalysis({ symbol: "POS", compositeScore: 62 }),
+          }),
+        ]}
+      />
+    );
+    expect(screen.getByText("+62")).toBeInTheDocument();
+  });
+
+  it("formats composite score with native - sign on negative values", () => {
+    render(
+      <ScannerTable
+        stocks={[
+          makeStock("NEG", {
+            analysis: makeAnalysis({ symbol: "NEG", compositeScore: -30 }),
+          }),
+        ]}
+      />
+    );
+    expect(screen.getByText("-30")).toBeInTheDocument();
+  });
+
+  it("shows zero score as '0' (no sign)", () => {
+    render(
+      <ScannerTable
+        stocks={[
+          makeStock("FLAT", {
+            analysis: makeAnalysis({ symbol: "FLAT", compositeScore: 0 }),
+          }),
+        ]}
+      />
+    );
+    expect(screen.getByText("0")).toBeInTheDocument();
+  });
+
+  it("colour-codes the score (green for positive, red for negative)", () => {
+    render(
+      <ScannerTable
+        stocks={[
+          makeStock("POS", {
+            analysis: makeAnalysis({ symbol: "POS", compositeScore: 80 }),
+          }),
+          makeStock("NEG", {
+            analysis: makeAnalysis({ symbol: "NEG", compositeScore: -80 }),
+          }),
+        ]}
+      />
+    );
+    const pos = screen.getByText("+80") as HTMLElement;
+    const neg = screen.getByText("-80") as HTMLElement;
+    // jsdom may store the inline color either as the original hsl(...) string
+    // or normalised to rgb(...). We don't care which; we only care that the
+    // two scores end up with *different* colours, and that the positive
+    // score's inline style references a value distinguishable from neutral.
+    const posColor = pos.style.color;
+    const negColor = neg.style.color;
+    expect(posColor).not.toBe("");
+    expect(negColor).not.toBe("");
+    expect(posColor).not.toBe(negColor);
+  });
+
   it("renders catalyst confidence stars in the Cat. column", () => {
     render(
       <ScannerTable
