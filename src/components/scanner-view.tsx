@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useStore, type ScannerStock } from "@/hooks/use-store";
 import { Sparkline } from "./sparkline";
 import { ScoreGauge, SignalBadge, RecommendationBadge } from "./indicators";
+import { TradeCard } from "./trade-card";
 import type {
   CatalystInfo,
   CatalystType,
@@ -11,7 +12,38 @@ import type {
   DiagnosisCategory,
   OptionsActivity,
 } from "@/types";
-import { CATALYST_CONFIG, OPTIONS_CONFIG } from "@/lib/config";
+import { CATALYST_CONFIG, OPTIONS_CONFIG, RISK_CONFIG } from "@/lib/config";
+
+// Phase 14 — persist the chosen layout across sessions so the user doesn't
+// have to re-pick on every page load. SSR-safe: we read localStorage in a
+// useEffect, not during render.
+type ViewMode = "detailed" | "compact";
+const VIEW_MODE_STORAGE_KEY = "scanner-view-mode";
+
+function useViewMode(): [ViewMode, (next: ViewMode) => void] {
+  // Default to detailed — the new Phase 14 card is the recommended layout.
+  const [mode, setMode] = useState<ViewMode>("detailed");
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+      if (stored === "compact" || stored === "detailed") {
+        setMode(stored);
+      }
+    } catch {
+      // localStorage can throw in private-mode / sandboxed contexts — just
+      // fall back to the default. Not an error worth logging.
+    }
+  }, []);
+  const update = (next: ViewMode) => {
+    setMode(next);
+    try {
+      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, next);
+    } catch {
+      // Same fallback: silently accept the in-memory change.
+    }
+  };
+  return [mode, update];
+}
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -356,10 +388,20 @@ export function ScannerView() {
     sectorFilter,
     setSectorFilter,
     vetoedCount,
+    portfolio,
   } = useStore();
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const [viewMode, setViewMode] = useViewMode();
   useNow(); // re-renders every 15s so timeAgo stays live
+
+  // Phase 14 — TradeCard needs the portfolio total to compute sizing. Empty
+  // portfolio falls back to RISK_CONFIG.defaultPortfolioValue so the user
+  // gets a representative example before they own anything.
+  const portfolioValueUsd = useMemo(() => {
+    if (portfolio.length === 0) return RISK_CONFIG.defaultPortfolioValue;
+    return portfolio.reduce((sum, p) => sum + p.currentPrice * p.shares, 0);
+  }, [portfolio]);
 
   const sectors = useMemo(
     () => ["All", ...new Set(scannerData.map((s) => s.sector))].sort(),
@@ -448,8 +490,8 @@ export function ScannerView() {
         ))}
       </div>
 
-      {/* Sort options */}
-      <div className="flex gap-1.5 mb-3">
+      {/* Sort options + view-mode toggle */}
+      <div className="flex gap-1.5 mb-3 items-center">
         {sortOptions.map((opt) => (
           <button
             key={opt.key}
@@ -466,6 +508,22 @@ export function ScannerView() {
             {opt.label}
           </button>
         ))}
+        <div className="flex-1" />
+        {/* Phase 14 — layout toggle. localStorage-persisted via useViewMode. */}
+        <button
+          onClick={() =>
+            setViewMode(viewMode === "detailed" ? "compact" : "detailed")
+          }
+          aria-label="Toggle scanner view mode"
+          title={
+            viewMode === "detailed"
+              ? "Switch to compact list"
+              : "Switch to detailed trade cards"
+          }
+          className="px-2.5 py-1 rounded-full text-[10px] font-semibold border-none cursor-pointer transition-all bg-white/[0.03] text-slate-500 hover:text-slate-400"
+        >
+          {viewMode === "detailed" ? "Compact" : "Detailed"}
+        </button>
       </div>
 
       {/* Stock cards */}
@@ -478,9 +536,17 @@ export function ScannerView() {
             <div className="text-sm">Try a different filter or search</div>
           </div>
         ) : (
-          paged.map((stock) => (
-            <StockCard key={stock.symbol} stock={stock} />
-          ))
+          paged.map((stock) =>
+            viewMode === "detailed" ? (
+              <TradeCard
+                key={stock.symbol}
+                stock={stock}
+                portfolioValueUsd={portfolioValueUsd}
+              />
+            ) : (
+              <StockCard key={stock.symbol} stock={stock} />
+            )
+          )
         )}
       </div>
 

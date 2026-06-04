@@ -87,6 +87,7 @@ Phases 0 through 13 have shipped (plus the 9.5 / 11.x sub-phases for ESLint, vit
 - Phase 11 — Audit log foundation
 - Phase 12 — FDA / drug-trial catalyst
 - Phase 13 — Box 3 helper *(rescoped from US-tax-aware)*
+- Phase 14 — Trade card UI
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -105,39 +106,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 
 
-
-## Phase 14 — Trade card UI *(was "Phase 10")*
-
-**Goal:** Replace current cards with the structured recommendation:
-
-```
-┌─────────────────────────────────────────────────────┐
-│ NVDA — STRONG BUY (score: 62)   Regime: ranging ✓  │
-├─────────────────────────────────────────────────────┤
-│ Why cheap?    Sector-wide selloff (semis -8% week)  │
-│ Catalysts:    📅 Earnings 12d, 👥 Insider cluster, │
-│               ⬆ MS upgrade                          │
-│ Options:      IV rank 22 (cheap), P/C 0.6           │
-│ Diagnosis:    🟢 Technical pullback, no red flags  │
-│ Entry / Stop / Target:  $432 / $409 / $503  R:R 3.0 │
-│ Size:         47 shares ($20,308)  4.1% portfolio  │
-│ Tax:          ⚠ would be short-term (held 184d)    │
-│ Confidence:   ★★★★☆                                 │
-└─────────────────────────────────────────────────────┘
-```
-
-### Tasks
-1. New component `src/components/trade-card.tsx`.
-2. Replace card rendering in `scanner-view.tsx`.
-3. Keep compact list view as a toggle.
-4. "Copy trade ticket" / export action.
-
-### Tests
-- Snapshot + permutation tests across regime/diagnosis/confidence combos.
-
-### Effort: **3 days**.
-
----
 
 ## Phase 15 — Backtest engine *(was "Phase 11" — make-or-break, THE GATE)*
 
@@ -408,21 +376,20 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~44.5 days of build time across Phases 0–13. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~46.5 days of build time across Phases 0–14. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 14 | Trade card UI | 3 d | 3 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 13 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 17 d |
-| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 17.5 d |
-| 17 | Postgres migration | 1.5 d | 19 d |
-| 18 | Decay monitoring | 3 d | 22 d |
-| 19 | Alternative data | 5 d | 27 d |
-| 20 | Portfolio optimization | 5 d | 32 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 47 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 10 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 14 d |
+| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 14.5 d |
+| 17 | Postgres migration | 1.5 d | 16 d |
+| 18 | Decay monitoring | 3 d | 19 d |
+| 19 | Alternative data | 5 d | 24 d |
+| 20 | Portfolio optimization | 5 d | 29 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 44 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

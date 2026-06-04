@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ScannerView } from "@/components/scanner-view";
 import { useStore } from "@/hooks/use-store";
@@ -55,6 +55,23 @@ describe("ScannerView", () => {
       portfolio: [],
       selectedSymbol: null,
     });
+    // Phase 14 — most of the existing tests assert the *compact* StockCard
+    // layout. Phase 14 changed the default to "detailed" (TradeCard), so
+    // pin compact mode here. The toggle-specific tests below override.
+    try {
+      window.localStorage.setItem("scanner-view-mode", "compact");
+    } catch {
+      // jsdom localStorage should always work; this catch keeps the test
+      // resilient against environment changes.
+    }
+  });
+
+  afterEach(() => {
+    try {
+      window.localStorage.removeItem("scanner-view-mode");
+    } catch {
+      // no-op
+    }
   });
 
   it("renders skeletons when loading", () => {
@@ -530,5 +547,150 @@ describe("ScannerView", () => {
     render(<ScannerView />);
     expect(screen.getByText(/News data warning/)).toBeInTheDocument();
     expect(screen.getByText(/50h old/)).toBeInTheDocument();
+  });
+
+  // Phase 14 — layout toggle. These intentionally don't pin compact in
+  // beforeEach because they test the toggle's own behavior.
+  describe("view-mode toggle (Phase 14)", () => {
+    it("defaults to detailed (TradeCard) when localStorage is empty", () => {
+      try {
+        window.localStorage.removeItem("scanner-view-mode");
+      } catch {
+        /* no-op */
+      }
+      useStore.setState({ scannerData: [makeStock("AAA")] });
+      render(<ScannerView />);
+      // TradeCard renders a "Copy ticket" button; StockCard does not.
+      expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+    });
+
+    it("reads compact mode from localStorage on mount", () => {
+      try {
+        window.localStorage.setItem("scanner-view-mode", "compact");
+      } catch {
+        /* no-op */
+      }
+      useStore.setState({ scannerData: [makeStock("AAA")] });
+      render(<ScannerView />);
+      // Compact (StockCard) does not render a "Copy ticket" button.
+      expect(screen.queryByText("Copy ticket")).toBeNull();
+    });
+
+    it("switches mode when the toggle button is clicked and persists to localStorage", () => {
+      try {
+        window.localStorage.removeItem("scanner-view-mode");
+      } catch {
+        /* no-op */
+      }
+      useStore.setState({ scannerData: [makeStock("AAA")] });
+      render(<ScannerView />);
+      // Default state: detailed → button reads "Compact" (i.e. click to switch).
+      expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("Compact"));
+      // After click: compact view, no Copy ticket, button now reads "Detailed".
+      expect(screen.queryByText("Copy ticket")).toBeNull();
+      expect(screen.getByText("Detailed")).toBeInTheDocument();
+      expect(window.localStorage.getItem("scanner-view-mode")).toBe("compact");
+      // And again — switch back.
+      fireEvent.click(screen.getByText("Detailed"));
+      expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+      expect(window.localStorage.getItem("scanner-view-mode")).toBe("detailed");
+    });
+
+    it("ignores an unrecognised stored value (defensive against schema drift)", () => {
+      try {
+        window.localStorage.setItem("scanner-view-mode", "garbage");
+      } catch {
+        /* no-op */
+      }
+      useStore.setState({ scannerData: [makeStock("AAA")] });
+      render(<ScannerView />);
+      // Falls back to default ("detailed") → Copy ticket is present.
+      expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+    });
+
+    it("tolerates a localStorage setItem that throws (private mode)", () => {
+      // The real-world failure mode in browser private modes is "read OK,
+      // write denied". Render in default mode, then attempt a toggle —
+      // the in-memory mode flip should still work even though persistence
+      // fails. jsdom proxies Storage methods, so spyOn the prototype.
+      window.localStorage.removeItem("scanner-view-mode");
+      const setItemSpy = vi
+        .spyOn(Storage.prototype, "setItem")
+        .mockImplementation(() => {
+          throw new Error("denied");
+        });
+      try {
+        useStore.setState({ scannerData: [makeStock("AAA")] });
+        render(<ScannerView />);
+        // Default mode = detailed.
+        expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+        // Click toggles in-memory even though setItem throws.
+        fireEvent.click(screen.getByText("Compact"));
+        expect(screen.queryByText("Copy ticket")).toBeNull();
+      } finally {
+        setItemSpy.mockRestore();
+      }
+    });
+
+    it("tolerates a localStorage getItem that throws (private mode)", () => {
+      // Cover the catch block in the mount-time read. jsdom returns a
+      // proxied Storage where instance-level assignment doesn't take —
+      // mock the prototype method instead.
+      const getItemSpy = vi
+        .spyOn(Storage.prototype, "getItem")
+        .mockImplementation(() => {
+          throw new Error("denied");
+        });
+      try {
+        useStore.setState({ scannerData: [makeStock("AAA")] });
+        render(<ScannerView />);
+        // Default mode applied (detailed) because getItem threw.
+        expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+      } finally {
+        getItemSpy.mockRestore();
+      }
+    });
+
+    it("passes the computed portfolioValueUsd to TradeCard for sizing", () => {
+      // With a non-empty portfolio, sizing math uses sum(currentPrice × shares).
+      useStore.setState({
+        portfolio: [
+          {
+            id: "p1",
+            symbol: "MSFT",
+            name: "Microsoft",
+            shares: 100,
+            buyPrice: 300,
+            buyDate: "2026-01-01",
+            currentPrice: 400, // → $40k contribution
+            pl: 10000,
+            plPct: 33,
+            status: "open",
+          },
+        ],
+        scannerData: [
+          makeStock("AAA", "Tech", {
+            risk: {
+              atr: 1,
+              entry: 50,
+              stop: 30,
+              stopMethod: "atr",
+              target: 110,
+              riskReward: 3,
+            },
+          }),
+        ],
+      });
+      try {
+        window.localStorage.removeItem("scanner-view-mode");
+      } catch {
+        /* no-op */
+      }
+      render(<ScannerView />);
+      // 1% of $40k = $400 risk budget; $20/share risk → 20 shares.
+      // Position cap: 10% × $40k = $4k / $50 = 80 shares — not capped.
+      expect(screen.getByText(/20 shares/)).toBeInTheDocument();
+    });
   });
 });
