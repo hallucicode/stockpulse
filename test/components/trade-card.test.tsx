@@ -66,6 +66,31 @@ const FULL_ANALYSIS = makeAnalysis({
     newsCount: 5,
     scoreAdjustment: 0,
   },
+  earnings: {
+    nextDate: "2026-06-15",
+    daysUntil: 12,
+    imminent: true,
+    hour: "bmo",
+  },
+  insiders: {
+    hasClusterBuy: true,
+    clusterBuyerCount: 3,
+    recentBuyValueUsd: 450_000,
+    lastBuyAt: "2026-05-10T00:00:00Z",
+    scoreAdjustment: 5,
+  },
+  analysts: {
+    recentUpgrades: 1,
+    recentDowngrades: 0,
+    latest: {
+      firm: "Morgan Stanley",
+      action: "upgraded",
+      fromGrade: "Hold",
+      toGrade: "Overweight",
+      date: "2026-05-12T00:00:00Z",
+    },
+    scoreAdjustment: 3,
+  },
   catalysts: {
     score: 25,
     present: ["earnings_upcoming", "insider_cluster", "analyst_upgrade"],
@@ -84,6 +109,21 @@ const FULL_ANALYSIS = makeAnalysis({
     skew: null,
     scoreAdjustment: 0,
   },
+  signals: [
+    { label: "RSI Neutral", detail: "RSI 50", type: "neutral", weight: 0 },
+    {
+      label: "Below Lower Bollinger",
+      detail: "Price below band",
+      type: "buy",
+      weight: 5,
+    },
+    {
+      label: "MACD Bullish",
+      detail: "MACD line above signal",
+      type: "buy",
+      weight: 8,
+    },
+  ],
 });
 
 beforeEach(() => {
@@ -106,14 +146,180 @@ describe("TradeCard", () => {
     // ranging + STRONG BUY = fit ✓
     expect(screen.getByLabelText(/regime fits signal/)).toBeInTheDocument();
     expect(screen.getByText(/sector-wide selloff/i)).toBeInTheDocument();
-    expect(screen.getByText(/Earnings · Insider cluster · Upgrade/)).toBeInTheDocument();
+    // Rich inline catalyst chips:
+    //   📅 Earnings 12d BMO · 👥 3 insiders ($450k) · ⬆ Morgan Stanley: Hold→Overweight
+    expect(
+      screen.getByText(/📅 Earnings 12d BMO/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/👥 3 insiders \(\$450k\)/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/⬆ Morgan Stanley: Hold→Overweight/)
+    ).toBeInTheDocument();
     expect(screen.getByText(/IV 22%/)).toBeInTheDocument();
-    expect(screen.getByText(/Sector dip/)).toBeInTheDocument();
+    // Diagnosis row carries the rationale text inline now.
+    expect(
+      screen.getByText(/🌊 Sector dip — Semis -8% week/)
+    ).toBeInTheDocument();
     expect(screen.getByText(/R:R 3.0×/)).toBeInTheDocument();
-    // size row: NVDA-style trade is capped at the 10% position limit
+    // Signals row: top-3 technical signals.
+    expect(screen.getByText(/RSI Neutral/)).toBeInTheDocument();
+    expect(screen.getByText(/Below Lower Bollinger/)).toBeInTheDocument();
+    expect(screen.getByText(/MACD Bullish/)).toBeInTheDocument();
+    // Size: capped (NVDA-style tight stop).
     expect(screen.getByText(/shares/)).toBeInTheDocument();
     expect(screen.getByText(/capped/)).toBeInTheDocument();
     expect(screen.getByText("Copy ticket")).toBeInTheDocument();
+  });
+
+  it("formats insider value in millions when big enough", () => {
+    const stock = makeStock({
+      analysis: makeAnalysis({
+        insiders: {
+          hasClusterBuy: true,
+          clusterBuyerCount: 2,
+          recentBuyValueUsd: 2_400_000,
+          lastBuyAt: "2026-05-10T00:00:00Z",
+          scoreAdjustment: 5,
+        },
+        catalysts: {
+          score: 10,
+          present: ["insider_cluster"],
+          confidence: 1,
+        },
+      }),
+    });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    expect(
+      screen.getByText(/👥 2 insiders \(\$2.4M\)/)
+    ).toBeInTheDocument();
+  });
+
+  it("omits the ($) tail when insider value is zero", () => {
+    const stock = makeStock({
+      analysis: makeAnalysis({
+        insiders: {
+          hasClusterBuy: true,
+          clusterBuyerCount: 2,
+          recentBuyValueUsd: 0,
+          lastBuyAt: "2026-05-10T00:00:00Z",
+          scoreAdjustment: 5,
+        },
+        catalysts: {
+          score: 5,
+          present: ["insider_cluster"],
+          confidence: 1,
+        },
+      }),
+    });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    // Chip ends after the count — no trailing parens.
+    expect(screen.getByText(/👥 2 insiders/)).toBeInTheDocument();
+    expect(screen.queryByText(/\$0/)).toBeNull();
+  });
+
+  it("falls back to analyst action when grade strings are missing", () => {
+    const stock = makeStock({
+      analysis: makeAnalysis({
+        analysts: {
+          recentUpgrades: 1,
+          recentDowngrades: 0,
+          latest: {
+            firm: "Goldman Sachs Inc",
+            action: "Initiated Buy",
+            fromGrade: null,
+            toGrade: null,
+            date: "2026-05-12T00:00:00Z",
+          },
+          scoreAdjustment: 3,
+        },
+        catalysts: {
+          score: 5,
+          present: ["analyst_upgrade"],
+          confidence: 1,
+        },
+      }),
+    });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    // "Inc" suffix stripped from firm; action used instead of grades.
+    expect(
+      screen.getByText(/⬆ Goldman Sachs: Initiated Buy/)
+    ).toBeInTheDocument();
+  });
+
+  it("renders sector-rotation and FDA chips with their detail", () => {
+    const stock = makeStock({
+      analysis: makeAnalysis({
+        sectorRotation: {
+          state: "turning_up",
+          etfSymbol: "XLV",
+          close: 130,
+          sma200: 128,
+          recentRunBars: 3,
+        },
+        fda: {
+          hasRecentApproval: true,
+          lastApprovalAt: "2026-05-01T00:00:00Z",
+          description: "Approval of treatment X",
+        },
+        catalysts: {
+          score: 15,
+          present: ["sector_rotation", "fda_event"],
+          confidence: 2,
+        },
+      }),
+    });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    expect(
+      screen.getByText(/🔄 XLV turning up/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/💊 FDA approval/)).toBeInTheDocument();
+  });
+
+  it("skips catalyst chips whose source data is missing (defensive)", () => {
+    // present says insider_cluster but no insiders object → chip dropped.
+    const stock = makeStock({
+      analysis: makeAnalysis({
+        catalysts: {
+          score: 5,
+          present: ["insider_cluster"],
+          confidence: 1,
+        },
+      }),
+    });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    // No catalysts row because the only chip was null.
+    expect(screen.queryByText(/Catalysts/)).toBeNull();
+  });
+
+  it("renders unusual-call and unusual-put markers inline on the options row", () => {
+    const stock = makeStock({
+      analysis: makeAnalysis({
+        options: {
+          atmIV: 0.45,
+          ivRank: 55,
+          putCallRatio: 1.1,
+          callVolume: 5000,
+          callOpenInterest: 10_000,
+          putVolume: 8000,
+          putOpenInterest: 12_000,
+          unusualCalls: true,
+          unusualPuts: true,
+          skew: null,
+          scoreAdjustment: 0,
+        },
+      }),
+    });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    expect(screen.getByText(/⚡ unusual calls/)).toBeInTheDocument();
+    expect(screen.getByText(/🛡 unusual puts/)).toBeInTheDocument();
+  });
+
+  it("hides the signals row when no signals are present", () => {
+    const stock = makeStock({ analysis: makeAnalysis({ signals: [] }) });
+    render(<TradeCard stock={stock} portfolioValueUsd={50_000} />);
+    expect(screen.queryByText(/^Signals$/)).toBeNull();
   });
 
   it("hides each row when its data is absent", () => {

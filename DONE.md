@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 14 (~46.5 days of build time).
+**Done so far:** Phases 0 through 14 (~47 days of build time).
 
 ---
 
@@ -713,3 +713,33 @@ A jurisdictional note was added to `IMPLEMENTATION_PLAN.md`'s intro so future ph
 - **Multi-broker ticket-export formats** — plain text only. JSON / IBKR-compatible / Tradingview formats are a small future iteration if anyone actually wants them.
 
 ### Effort: **2 days** (vs 3 estimated — the existing `StockCard` already shipped most of the data the mock-up wanted; Phase 14 was 60% restructure / sizing math, 40% wiring).
+
+---
+
+### Phase 14 follow-up — in-PR rework after UI review
+
+After the first commit hit the PR, real-user testing surfaced two concrete defects worth fixing before merge:
+
+1. **Detailed view was less informative than Compact.** The `StockCard` carried depth via hover tooltips (catalyst names, $-values, firm names, full vol/OI numbers, full diagnosis rationale). The first cut of `TradeCard` rolled that data into terse strings ("Earnings · Insider cluster · Upgrade") and dropped the tooltips entirely. Switching to Detailed actually *lost* information. Also: the top-3 technical signal badges (RSI / Bollinger / MACD) from the StockCard's bottom row were not carried over to TradeCard at all — straight-up missing.
+2. **Compact view (StockCard) had a structural layout bug.** Two-column flex layout with a much-taller right column (recommendation, score, 5–8 badges, vol, timestamp) and a short left column (symbol, name, price) created vertical dead space, and the full-width signal/risk rows below reset the alignment. Looked broken.
+
+**Fix shipped on the same branch (PR still open):**
+
+- **TradeCard rows now inline the depth:**
+  - Catalysts row builds per-catalyst chips from real fields, not a static label map. Each chip carries the most useful single fact: `📅 Earnings 12d (BMO)` · `👥 3 insiders ($450k)` · `⬆ Morgan Stanley: Hold→Overweight` · `🔄 XLV turning up` · `💊 FDA approval`. Insider $-values format with k/M suffix (`$450k`, `$2.4M`). Firm legal-suffix stripping (`Goldman Sachs Inc → Goldman Sachs`) for chip width. Falls back to `latest.action` text when `fromGrade`/`toGrade` are null.
+  - Diagnosis row now inlines `a.diagnosis.rationale`: `🌊 Sector dip — Semis -8% week`.
+  - Options row appends inline `⚡ unusual calls` / `🛡 unusual puts` flags when present.
+  - **New Signals row** renders top-3 from `a.signals`, coloured by signal type (buy = emerald `⊕`, sell = rose `⊖`, neutral = slate `·`) with full `s.detail` in the title tooltip. Closes the data gap vs StockCard.
+  - Defensive: catalyst chips whose source data is missing (e.g. `present` includes `insider_cluster` but `a.insiders` is undefined) are skipped, and the row hides entirely if all chips drop to null.
+- **Compact view rebuilt as a real table** (`src/components/scanner-table.tsx`). Columns: Sym · Sector · Rec · Score · Price · Day % · R:R · Cat. Sortable visual order matches the existing sort buttons. One row per stock. Clickable rows navigate to detail. OWNED dot inline next to the symbol. R:R shows `—` when no risk packet (column stays aligned). Catalyst column shows confidence stars. Designed for "scan 50 names at once" — no more broken two-column layout, no dead space.
+- **`StockCard` and its helpers fully deleted** (`DIAGNOSIS_STYLE`, local `CATALYST_LABEL`, `ConfidenceStars`, `OptionsLine`, `DiagnosisBadge`, `timeAgo`, `useNow`, and the unused `Sparkline` import). `scanner-view.tsx` dropped from 587 lines to 268 lines.
+
+**Tests updated:**
+- TradeCard: 14 → 21 tests. New: insider $-value formatting (k vs M vs zero-suppression), analyst grade vs action fallback, sector-rotation / FDA chip rendering, defensive null-chip dropping, unusual-flag inline rendering, signals row hidden when empty.
+- ScannerTable: new 9-test file covering header rendering, one-row-per-stock, click-to-detail, OWNED marker, recommendation colour coding, day-change colour, R:R column with both data and `—` empty state, empty-state, catalyst star column.
+- scanner-view: 37 → 19 tests. Deleted 18 tests that asserted StockCard-specific markup (timeAgo, individual badges, badge tooltips, IV line, unusual badges, stop/target row) — that behaviour is now covered in `trade-card.test.tsx` and `scanner-table.test.tsx`, so duplicating the assertions in scanner-view was noise. scanner-view tests now focus on what the view itself owns: filtering, sorting, pagination, search, news banner, the layout toggle.
+- **870 tests pass total** (was 872 before the rework — net -2 because the kept scanner-view tests now exercise TradeCard/ScannerTable indirectly rather than the deleted ones doing it explicitly). Coverage **98.25 / 92.97 / 98.42 / 98.25** — actually went up because the dead StockCard helpers no longer drag the per-file averages down.
+
+**Effort for the rework:** ~3 hours.
+
+### Total Phase 14 effort: **2.5 days** (vs 3 estimated). The first cut was 2 days; the in-PR rework was the second half-day. PR was held open through the rework; merge happens once you sign off on this updated state.
