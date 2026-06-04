@@ -1,10 +1,163 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useStore } from "@/hooks/use-store";
 import { executeRemove, executeSell } from "@/hooks/use-data";
 import { ScoreGauge } from "./indicators";
 import { log } from "@/lib/logger";
 import { toast } from "sonner";
+
+interface Box3EstimateResponse {
+  kind: "ok" | "no-fx-rate";
+  asOf?: string;
+  valuation?: {
+    usdEurRate: number;
+    totalValueUsd: number;
+    totalValueEur: number;
+    fallbackCount: number;
+  };
+  estimate?: {
+    totalValueEur: number;
+    heffingsvrijVermogen: number;
+    taxableBaseEur: number;
+    deemedReturnEur: number;
+    estimatedTaxEur: number;
+    taxYear: number;
+  };
+}
+
+function formatEur(n: number): string {
+  return n.toLocaleString("nl-NL", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+export function Box3Panel() {
+  const [data, setData] = useState<Box3EstimateResponse | null>(null);
+  const [snapshotting, setSnapshotting] = useState(false);
+
+  const fetchEstimate = async () => {
+    try {
+      const res = await fetch("/api/box3/estimate", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as Box3EstimateResponse;
+      setData(body);
+    } catch (err) {
+      log.warn("portfolio-view", "box3.fetch.failure", { error: err });
+    }
+  };
+
+  useEffect(() => {
+    fetchEstimate();
+  }, []);
+
+  const handleSnapshot = async () => {
+    setSnapshotting(true);
+    try {
+      const res = await fetch("/api/box3/snapshot", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          label: `Manual snapshot ${new Date().toISOString().slice(0, 10)}`,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast.success("Snapshot saved for Box 3 records.");
+      await fetchEstimate();
+    } catch (err) {
+      log.warn("portfolio-view", "box3.snapshot.failure", { error: err });
+      toast.error("Failed to take Box 3 snapshot.");
+    } finally {
+      setSnapshotting(false);
+    }
+  };
+
+  if (!data) return null;
+
+  if (data.kind === "no-fx-rate") {
+    return (
+      <div className="bg-amber-500/[0.06] border border-amber-500/20 rounded-lg p-3 mb-3">
+        <div className="text-[11px] text-amber-300 font-semibold mb-0.5">
+          📊 Box 3 helper
+        </div>
+        <div className="text-[10px] text-slate-400">
+          USD/EUR rate not yet cached — the daily fx.refresh cron hasn&apos;t
+          run yet. Box 3 estimate will appear once it does.
+        </div>
+      </div>
+    );
+  }
+
+  if (!data.valuation || !data.estimate) return null;
+  const v = data.valuation;
+  const e = data.estimate;
+
+  return (
+    <div className="bg-[var(--bg-card)] border border-white/5 rounded-lg p-3 mb-3">
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <div className="text-[11px] text-slate-400 font-semibold">
+            📊 Box 3 helper · tax year {e.taxYear}
+          </div>
+          <div className="text-[9px] text-slate-600 italic">
+            Estimate — not tax advice. Rates may be out of date; review
+            BOX3_CONFIG before filing.
+          </div>
+        </div>
+        <button
+          onClick={handleSnapshot}
+          disabled={snapshotting}
+          className="px-3 py-1 rounded-md text-[11px] font-semibold bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 cursor-pointer hover:bg-cyan-500/20 transition-colors disabled:opacity-50"
+        >
+          {snapshotting ? "Saving…" : "Snapshot for Box 3"}
+        </button>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="bg-white/[0.02] rounded p-2">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">
+            Portfolio (USD)
+          </div>
+          <div className="text-[14px] font-bold">
+            $
+            {v.totalValueUsd.toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </div>
+        </div>
+        <div className="bg-white/[0.02] rounded p-2">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">
+            Portfolio (EUR)
+          </div>
+          <div className="text-[14px] font-bold">
+            €{formatEur(v.totalValueEur)}
+          </div>
+          <div className="text-[9px] text-slate-600">
+            @ {v.usdEurRate.toFixed(4)} USD/EUR
+          </div>
+        </div>
+        <div className="bg-white/[0.02] rounded p-2">
+          <div className="text-[9px] text-slate-500 uppercase tracking-wider">
+            Box 3 estimate
+          </div>
+          <div className="text-[14px] font-bold text-amber-300">
+            €{formatEur(e.estimatedTaxEur)}
+          </div>
+          {e.taxableBaseEur === 0 && (
+            <div className="text-[9px] text-slate-600">below heffingsvrij</div>
+          )}
+        </div>
+      </div>
+      {v.fallbackCount > 0 && (
+        <div className="text-[9px] text-slate-500 mt-1.5">
+          ⚠ {v.fallbackCount} position{v.fallbackCount === 1 ? "" : "s"} used a
+          stale buy-price (no recent quote in cache).
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PortfolioView() {
   const { portfolio, portfolioLoading, setView, setSelectedSymbol, setPortfolio } =
@@ -57,6 +210,9 @@ export function PortfolioView() {
 
   return (
     <div>
+      {/* Phase 13 — Box 3 helper panel (top of page) */}
+      <Box3Panel />
+
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-2 mb-4">
         <div className="bg-[var(--bg-card)] rounded-lg p-2.5 text-center">

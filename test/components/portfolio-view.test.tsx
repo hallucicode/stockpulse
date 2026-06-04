@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { PortfolioView } from "@/components/portfolio-view";
+import { Box3Panel, PortfolioView } from "@/components/portfolio-view";
 import { useStore } from "@/hooks/use-store";
 
 vi.mock("sonner", () => ({
@@ -30,6 +30,134 @@ function makePos(id: string, overrides: any = {}) {
     ...overrides,
   };
 }
+
+describe("Box3Panel", () => {
+  const okResponse = {
+    kind: "ok" as const,
+    asOf: "2026-05-16T00:00:00Z",
+    valuation: {
+      usdEurRate: 0.92,
+      totalValueUsd: 200_000,
+      totalValueEur: 184_000,
+      fallbackCount: 0,
+    },
+    estimate: {
+      totalValueEur: 184_000,
+      heffingsvrijVermogen: 57_000,
+      taxableBaseEur: 127_000,
+      deemedReturnRate: 0.0604,
+      deemedReturnEur: 7670.8,
+      taxRate: 0.36,
+      estimatedTaxEur: 2761.49,
+      taxYear: 2026,
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders a full Box 3 estimate panel after fetching", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => okResponse,
+    }) as unknown as typeof fetch;
+
+    render(<Box3Panel />);
+    await waitFor(() => {
+      expect(screen.getByText(/Box 3 helper/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/tax year 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Estimate — not tax advice/)).toBeInTheDocument();
+    expect(screen.getByText(/\$200,000.00/)).toBeInTheDocument();
+    expect(screen.getByText(/Snapshot for Box 3/)).toBeInTheDocument();
+  });
+
+  it("shows a 'rate not yet cached' state when kind is no-fx-rate", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ kind: "no-fx-rate" }),
+    }) as unknown as typeof fetch;
+
+    render(<Box3Panel />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/USD\/EUR rate not yet cached/)
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("renders nothing when the API call fails (no UI noise)", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    }) as unknown as typeof fetch;
+
+    const { container } = render(<Box3Panel />);
+    // Give the effect a tick to settle, then verify nothing rendered.
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalled();
+    });
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("posts a snapshot when the button is clicked", async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => okResponse })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "snap1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => okResponse });
+    global.fetch = fetchSpy as unknown as typeof fetch;
+
+    render(<Box3Panel />);
+    const button = await waitFor(() => screen.getByText(/Snapshot for Box 3/));
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/box3/snapshot",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+  });
+
+  it("shows a fallback warning when some positions used stale buy-prices", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...okResponse,
+        valuation: { ...okResponse.valuation, fallbackCount: 2 },
+      }),
+    }) as unknown as typeof fetch;
+
+    render(<Box3Panel />);
+    await waitFor(() => {
+      expect(
+        screen.getByText(/2 positions used a stale buy-price/)
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows 'below heffingsvrij' note when the taxable base is zero", async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...okResponse,
+        estimate: {
+          ...okResponse.estimate,
+          taxableBaseEur: 0,
+          estimatedTaxEur: 0,
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    render(<Box3Panel />);
+    await waitFor(() => {
+      expect(screen.getByText(/below heffingsvrij/)).toBeInTheDocument();
+    });
+  });
+});
 
 describe("PortfolioView", () => {
   beforeEach(() => {

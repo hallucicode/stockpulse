@@ -23,6 +23,7 @@ import {
   SECTOR_ROTATION_CONFIG,
   OPTIONS_CONFIG,
   FDA_CONFIG,
+  BOX3_CONFIG,
 } from "./config";
 
 export type HealthStatus =
@@ -183,6 +184,16 @@ export const HEALTH_SPECS: ReadonlyArray<ComponentSpec> = [
     startEvents: ["refresh.start"],
     expectedFreshnessSec: 30 * 60 * 60,
     refreshIntervalMs: FDA_CONFIG.refreshIntervalMs,
+  },
+  {
+    component: "fx",
+    label: "USD/EUR rate",
+    description:
+      "Daily Frankfurter (ECB reference rate) pull of USD/EUR. Feeds the Phase 13 Box 3 helper's EUR conversions.",
+    successEvents: ["refresh.done"],
+    startEvents: ["refresh.start"],
+    expectedFreshnessSec: 30 * 60 * 60,
+    refreshIntervalMs: BOX3_CONFIG.fxRefreshIntervalMs,
   },
   {
     component: "discovery",

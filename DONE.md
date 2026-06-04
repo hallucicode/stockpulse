@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 12 (~42.5 days of build time).
+**Done so far:** Phases 0 through 13 (~44.5 days of build time).
 
 ---
 
@@ -627,3 +627,53 @@ The `Healthcare` sector filter is applied at the cron level (DB `WHERE sector = 
 - **De-duplication across openFDA brand/generic aliases** — currently we describe with the first brand or generic name and trust the application-number unique key. If a single approval appears multiple times in the openFDA response under different aliases, the unique-key constraint handles it on persist. Not seen empirically; flagging as theoretical.
 
 ### Effort: **1.5 days** (matched plan estimate).
+
+---
+
+## Phase 13 — Box 3 helper ✅ DONE *(rescoped from US-tax-aware)*
+
+**Why this is a rescope:** the original Phase 13 spec assumed US capital-gains taxation (short-term vs long-term rates, wash-sale rule, FIFO/LIFO lot accounting). The app's actual user is a **Netherlands-resident retail investor trading US-listed stocks** — under NL Box 3 there's no per-trade taxable event, no holding-period decision, no wash-sale rule. The entire original scope produced zero actionable signals for the real user. Rescoped during planning to focus on the genuinely useful Box 3 features: EUR conversion, peildatum snapshots, and a back-of-envelope liability estimate.
+
+A jurisdictional note was added to `IMPLEMENTATION_PLAN.md`'s intro so future phases don't repeat the assumption-without-checking error: this app is built for an NL-resident investor trading primarily US-listed stocks; tax/regulatory defaults follow accordingly.
+
+**Shipped:**
+- **`FxRate` Prisma model** — daily cache of ECB reference rates from Frankfurter. Unique `(date, fromCurrency, toCurrency)` so historical-as-of lookup is one indexed read.
+- **`Box3Snapshot` Prisma model** — append-only peildatum history. Each row carries USD + EUR totals, USD/EUR rate at the time, per-position JSON breakdown, tax year, and a free-text label.
+- **`BOX3_CONFIG` + `Box3Config` interface** in `src/lib/config.ts`. Holds the four user-facing rates (taxYear, heffingsvrijVermogen, deemedReturnRateOverigeBezittingen, box3TaxRate) with **explicit "update each tax year" comments**. Plus the FX refresh cadence and currency pair.
+- **`src/lib/box3.ts`** (pure, 100% covered) — `convertUsdToEur` (cent-rounded, NaN-safe), `computePortfolioValueEur` (with explicit `usedFallbackPrice` flag when current price is missing), `estimateBox3Liability` (returns every config-derived field for UI transparency).
+- **`src/lib/fx-source.ts`** (edge, 100% covered) — `refreshUsdEurRate()` daily cron worker pulling from `https://api.frankfurter.app/latest?from=USD&to=EUR`. Treats network / HTTP / parse / malformed-response / persist failures as soft (logs warn, returns null). `getLatestUsdEurRate()` returns the most recent cached row or null on cold start.
+- **`src/lib/box3-source.ts`** (edge) — orchestrates the trio (open positions × AnalysisCache prices × latest FX rate) into a `ValuationResult` discriminated union. `takeSnapshot()` persists to `Box3Snapshot`. `listSnapshots()` returns history (date desc).
+- **`fx.refresh` cron** registered via the Phase 10 scheduler. `fx` component added to `HEALTH_SPECS`. `fx:refresh.start` / `fx:refresh.done` whitelisted in log-persistence.
+- **Three API routes:**
+  - `GET /api/box3/estimate` — discriminated `{ kind: "ok" | "no-fx-rate" }` response with full valuation + estimate.
+  - `POST /api/box3/snapshot` — takes optional `label` and `effectiveDate`. 503 when FX cache is empty (degraded), 400 on malformed date, 500 on anything else.
+  - `GET /api/box3/snapshots` — list, date-desc.
+- **UI: `Box3Panel`** at top of `/portfolio` page. Three-card layout: portfolio USD, portfolio EUR (with rate label), Box 3 estimate (with "below heffingsvrij" note when zero). "Snapshot for Box 3" button POSTs and toasts on success. Renders a friendly "rate not yet cached" state when the FX cron hasn't run yet. **"Estimate — not tax advice"** plastered prominently.
+
+**What this phase explicitly does NOT do:**
+- No per-trade tax decisions (Box 3 doesn't care).
+- No US dividend withholding tracker (broker's *jaaropgaaf* handles it).
+- No lot-by-lot cost basis (irrelevant under Box 3).
+- No wash-sale, holding-period, or FIFO/LIFO logic (none apply under NL law).
+- No multi-currency beyond USD/EUR.
+
+**Tests & coverage:**
+- **13 pure box3 tests** — conversion (rounding, NaN handling, sign symmetry), valuation (multi-position aggregation, fallback price flag, empty portfolio, custom rate), estimate (zero-below-threshold, exact-threshold, over-threshold math, custom-config override).
+- **12 fx-source tests** — happy fetch + upsert, configured currency pair, every failure path (network, 5xx, parse, malformed body, non-finite rate, malformed date, persist failure), cold-start read returns null, most-recent-row read, query-args shape.
+- **15 box3-source tests** — happy valuation, no-FX-rate state, fallback price (missing analysis cache row, malformed JSON, no `analysis.price` field), open-positions-only query, empty portfolio, snapshot persistence with label / effectiveDate / defaults / log event, throws-without-FX, list returns mapped rows in date-desc order.
+- **13 API tests** — all three routes happy + every error path including a malformed JSON body and unparseable effectiveDate.
+- **6 UI tests** — full render, no-fx-rate state, API failure renders nothing, snapshot button POSTs, fallback warning visible, below-heffingsvrij note visible.
+- **813 tests pass total** (was 754). Coverage **97.84 / 92.64 / 98.05 / 97.84** — all thresholds met.
+
+**Caveats made obvious in code + UI:**
+- BOX3_CONFIG rates **must be updated each tax year** as the Belastingdienst revises them. Comments call this out per-field.
+- The estimate is a sanity-check ballpark; the real aangifte handles asset/debt netting, partner-pooling, and asset-category nuances this app doesn't model.
+
+**Deferred (genuinely out of scope or for future small phases):**
+- **Partner-pooling** (heffingsvrij doubles for fiscal partners). Single-filer assumption is fine for v1.
+- **Asset-category mixing** beyond `overige bezittingen` — bank deposits, real estate, crypto have different deemed-return rates. The app doesn't track those, so out of scope.
+- **Auto-snapshot on Jan 1** — currently a manual button click. Auto would risk a misleading "official" number if Jan 1 falls on a weekend / data gap. Wait until a user actually wants it.
+- **`/box3` history page** — snapshot list is exposed via the API but no UI consumes it yet. Tiny follow-up Phase 13.x if you want to browse history without hitting curl.
+- **GBP, CAD, other quote currencies** — schema is currency-pair-shaped so adding one is a config tweak. YAGNI today.
+
+### Effort: **2 days** (rescoped from 4 — matched the rescoped estimate).

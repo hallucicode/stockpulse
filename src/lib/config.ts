@@ -492,6 +492,59 @@ export const FDA_CONFIG = {
   minMatchTokenLength: 4,
 } as const;
 
+// ─── Box 3 helper (Phase 13) — parameter type ───
+export interface Box3Config {
+  taxYear: number;
+  heffingsvrijVermogen: number;
+  deemedReturnRateOverigeBezittingen: number;
+  box3TaxRate: number;
+  fxRefreshIntervalMs: number;
+  baseCurrency: string;
+  quoteCurrency: string;
+}
+
+// ─── Box 3 helper (Phase 13) ───
+//
+// Constants used to estimate the user's annual Netherlands Box 3
+// liability based on portfolio EUR value. The numbers below are
+// snapshot-as-of-2024 placeholders — the Belastingdienst revises them
+// each tax year. **Update the four user-facing rates whenever the new
+// tax year is published** (around the autumn before the year begins).
+//
+// The displayed number is a sanity-check ballpark only — the actual
+// aangifte handles asset/debt netting, partner-pooling, and asset-
+// category nuances this app deliberately doesn't model. The UI plasters
+// "estimate — not tax advice" prominently next to anything derived
+// from these values.
+//
+// `fxRefreshIntervalMs` is the cadence for the daily USD/EUR rate
+// refresh via the Phase 10 scheduler.
+export const BOX3_CONFIG = {
+  // Current tax year these rates are calibrated against. Used in
+  // snapshot labelling and on the UI tooltip ("rates as of 2026").
+  taxYear: 2026,
+  // Heffingsvrij vermogen — the portfolio value below which Box 3 tax
+  // is zero. Per-person threshold; double for fiscal partners. The
+  // app assumes a single filer; partner-pooling is a future Phase
+  // 13.x if it ever matters.
+  // **2024 value: €57,000. Update when the 2026 number is published.**
+  heffingsvrijVermogen: 57_000,
+  // Deemed return rate for "overige bezittingen" (stocks, crypto,
+  // most non-bank investments). Expressed as a fraction.
+  // **2024 value: 0.0604 (6.04%). Update each tax year.**
+  deemedReturnRateOverigeBezittingen: 0.0604,
+  // Box 3 tax rate on the deemed return.
+  // **2024 value: 0.36 (36%). Update each tax year.**
+  box3TaxRate: 0.36,
+  // Daily FX-rate refresh — Frankfurter API (ECB reference rates)
+  // updates each business day around 16:00 CET.
+  fxRefreshIntervalMs: 24 * 60 * 60 * 1000,
+  // FX pair. v1 is USD→EUR only; the schema is currency-pair-shaped
+  // so future expansion (GBP, CAD, …) doesn't require migration.
+  baseCurrency: "USD",
+  quoteCurrency: "EUR",
+} as const;
+
 export interface CatalystConfig {
   earningsCatalystWindowDays: number;
   weights: {

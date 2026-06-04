@@ -63,6 +63,8 @@ const PERSISTED_INFO_EVENTS: ReadonlySet<string> = new Set([
   "fda:refresh.done",
   "fda:refresh.empty-watchlist",
   "fda:fetch.empty",
+  "fx:refresh.start",
+  "fx:refresh.done",
   "audit-log:prune.done",
   "discovery:watchlist.added",
   "notifications:skip.no-topic",

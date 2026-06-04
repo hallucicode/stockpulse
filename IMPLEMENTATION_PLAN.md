@@ -4,6 +4,14 @@ Roadmap for evolving the current technical scanner into a semi-automated trading
 
 > **Where's the done work?** Completed phases live in [`DONE.md`](./DONE.md). When a phase here ships, **move its section out of this file into `DONE.md`** so this file stays focused on what's still to do.
 
+> **Investor context.** This app is built for a **Netherlands-resident retail investor trading primarily US-listed stocks**. Design defaults assume:
+>
+> - **Box 3 taxation** (wealth tax on portfolio value), not US capital-gains-on-realised-profit. No holding-period decisions, no wash-sale rule, no FIFO/LIFO lot accounting.
+> - **EUR as reporting currency** for tax purposes; USD as the trading currency for most positions. Conversion via ECB daily reference rate.
+> - **Yahoo Finance / Finnhub free tier** US-market data coverage. Non-US listings are silently excluded by the Phase 4.5 fundamentals filter.
+>
+> Whenever a future phase has a tax / regulatory / market-structure dimension, default to NL-resident / US-traded-stocks unless explicitly stated otherwise. Earlier phases (0–12) that assumed US-resident defaults are noted in DONE.md but the assumptions don't bite (technical signals are jurisdiction-neutral).
+
 > **Honest framing.** This is a personal project, not a hedge fund. The realistic goal is **not** "beat the market" — it's:
 >
 > 1. **Enforce discipline.** Replace gut decisions with mechanical stops, sizing, and entry rules.
@@ -58,7 +66,7 @@ These rules apply to **every phase, including small fixes.** Cutting corners in 
 
 ## ✅ Done — see [`DONE.md`](./DONE.md)
 
-Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from the original plan, test counts, and deferral lists live in `DONE.md` to keep this file focused on upcoming work.
+Phases 0 through 13 have shipped (plus the 9.5 / 11.x sub-phases for ESLint, vitest config, FDA matching, and audit-log schema version). Their detailed shipped-notes, deviations from the original plan, test counts, and deferral lists live in `DONE.md` to keep this file focused on upcoming work.
 
 **Quick index of what's done:**
 - Phase 0 — Data quality firewall
@@ -78,6 +86,7 @@ Phases 0 through 8 have shipped. Their detailed shipped-notes, deviations from t
 - Phase 10 — Scheduler + rate-limit refactor
 - Phase 11 — Audit log foundation
 - Phase 12 — FDA / drug-trial catalyst
+- Phase 13 — Box 3 helper *(rescoped from US-tax-aware)*
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -96,29 +105,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 
 
-
-## Phase 13 — Tax-aware decisions *(was "Phase 9")*
-
-**Why now:** Largest controllable cost. US short-term capital gains (≤1 year) is up to **37%**; long-term is **15–20%** — a 17–22pp gap that's bigger than most strategies' alpha. Pre-Phase 14 so trade card UI can show holding-period status.
-
-### Tasks
-1. New module `src/lib/tax.ts`:
-   - **Lot tracking**: FIFO / LIFO / specific-ID per position.
-   - **Wash-sale detection**: a sell at a loss disallows the loss for tax purposes if the same security is rebought within 30 days. The system must:
-     - Block rebuys within the wash-sale window (configurable: hard block vs. warn).
-     - Track and report disallowed losses.
-   - **Holding-period awareness**: surface a warning for sells within 30 days of crossing the 1-year threshold (delaying the sale may save 15–20pp).
-   - **Tax-loss harvesting**: at year-end, identify open positions at a loss that would be tax-efficient to close.
-2. **Account-type config**: per-account flag (`taxable | ira | 401k`). Tax rules apply only to taxable accounts.
-3. UI: holding-period progress bar on each open position; year-to-date realized gains/losses tracker.
-
-### Tests
-- Wash-sale scenarios (buy → sell loss → rebuy 15 days later).
-- Holding-period scenarios (sell at day 360 vs. day 366).
-
-### Effort: **4 days**.
-
----
 
 ## Phase 14 — Trade card UI *(was "Phase 10")*
 
@@ -393,6 +379,14 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 - Block-trade detection in options (Phase 8 deferral) — needs paid Polygon / CBOE data.
 - Greeks beyond IV (delta / gamma / theta / vega) — compute when Phase 14 trade card needs them.
 
+### Box 3 helper (Phase 13 follow-ups)
+- **Stale-rates warning banner.** `BOX3_CONFIG` (heffingsvrij, deemed-return rate, tax rate) is pinned to a single tax year and needs a manual yearly bump. If the config is older than ~18 months, show a banner on the Box 3 panel ("Rates last updated YYYY-MM — please verify against current Belastingdienst figures"). Cheap to build (`BOX3_CONFIG.ratesLastUpdated` constant + a date check in `Box3Panel`); meaningful safety net if a yearly update gets missed. Promote to a phase only if a yearly bump actually gets forgotten — otherwise low priority.
+- Partner-pooling (heffingsvrij doubles for fiscal partners).
+- Multi-currency beyond USD/EUR (GBP/CHF positions if the universe ever broadens).
+- Auto-snapshot cron on Jan 1 (currently a manual button click).
+- `/box3` history page surfacing the `Box3Snapshot` rows (API exists; no UI yet).
+- Secondary FX source behind `getLatestUsdEurRate` (ECB direct / exchangerate.host) for Frankfurter outages.
+
 ### Infrastructure (further out)
 - Sentry / Datadog for production error tracking + per-API latency.
 - Proper secret management (Doppler / 1Password Connect) before any prod deploy.
@@ -414,22 +408,21 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~42.5 days of build time across Phases 0–12. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~44.5 days of build time across Phases 0–13. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 13 | Tax-aware decisions | 4 d | 4 d |
-| 14 | Trade card UI | 3 d | 7 d |
-| 15 | Backtest engine *(THE GATE)* | 10 d | 17 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 21 d |
-| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 21.5 d |
-| 17 | Postgres migration | 1.5 d | 23 d |
-| 18 | Decay monitoring | 3 d | 26 d |
-| 19 | Alternative data | 5 d | 31 d |
-| 20 | Portfolio optimization | 5 d | 36 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 51 d |
+| 14 | Trade card UI | 3 d | 3 d |
+| 15 | Backtest engine *(THE GATE)* | 10 d | 13 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 17 d |
+| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 17.5 d |
+| 17 | Postgres migration | 1.5 d | 19 d |
+| 18 | Decay monitoring | 3 d | 22 d |
+| 19 | Alternative data | 5 d | 27 d |
+| 20 | Portfolio optimization | 5 d | 32 d |
+| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 47 d |
 
 **~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 

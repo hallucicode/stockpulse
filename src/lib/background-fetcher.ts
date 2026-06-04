@@ -70,7 +70,8 @@ import {
   getRecentApprovalsForSymbol,
 } from "./fda-source";
 import { evaluateFdaActivity } from "./fda";
-import { SECTOR_ROTATION_CONFIG, OPTIONS_CONFIG, FDA_CONFIG } from "./config";
+import { SECTOR_ROTATION_CONFIG, OPTIONS_CONFIG, FDA_CONFIG, BOX3_CONFIG } from "./config";
+import { refreshUsdEurRate } from "./fx-source";
 import { registerCron, startAll, stopAll } from "./scheduler";
 import { sleep } from "./throttle";
 import type { Regime, SectorRotationInfo } from "@/types";
@@ -525,6 +526,13 @@ function registerCrons(): void {
     name: "fda.refresh",
     intervalMs: FDA_CONFIG.refreshIntervalMs,
     run: () => refreshFdaApprovals(),
+  });
+  registerCron({
+    name: "fx.refresh",
+    intervalMs: BOX3_CONFIG.fxRefreshIntervalMs,
+    run: async () => {
+      await refreshUsdEurRate();
+    },
   });
   registerCron({
     name: "log-prune",
