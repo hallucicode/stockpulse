@@ -109,6 +109,33 @@ model Box3Snapshot {
   @@index([date])
 }
 
+/// Historical daily OHLCV bars — Phase 15a (backtest engine foundation).
+///
+/// Populated by `backfillSymbol(symbol, years)` from Yahoo. One row per
+/// (symbol, trading day). The backtest engine reads this table to build
+/// per-symbol bar series for walk-forward simulation; v1 stores raw
+/// close prices (split/dividend handling defers to backlog), but we
+/// capture `adjClose` now so a future enhancement can apply corrections
+/// without re-fetching.
+///
+/// Append-only by `(symbol, date)` uniqueness. Idempotent: re-running
+/// backfill upserts existing rows.
+model HistoricalBar {
+  id        String   @id @default(cuid())
+  symbol    String
+  date      DateTime // UTC midnight, exchange day granularity
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float
+  adjClose  Float?   // For future split/dividend handling
+  fetchedAt DateTime @default(now())
+
+  @@unique([symbol, date])
+  @@index([symbol, date])
+}
+
 /// Cached price snapshots to avoid hitting APIs too often
 model PriceCache {
   id        String   @id @default(cuid())
