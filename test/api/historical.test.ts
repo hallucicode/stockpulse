@@ -37,20 +37,68 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("POST /api/historical/backfill", () => {
-  it("triggers backfill with default years (5) when no body", async () => {
-    sourceMock.backfillWatchlist.mockResolvedValue({
-      totalSymbols: 3,
-      succeeded: 3,
-      empty: 0,
-      errored: 0,
-      totalBarsWritten: 3700,
+/** Helper: read an NDJSON stream Response body to a list of parsed events. */
+async function readNdjsonStream(res: Response): Promise<unknown[]> {
+  if (!res.body) return [];
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const events: unknown[] = [];
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (line.trim()) events.push(JSON.parse(line));
+    }
+  }
+  if (buffer.trim()) events.push(JSON.parse(buffer));
+  return events;
+}
+
+describe("POST /api/historical/backfill (NDJSON stream)", () => {
+  it("streams start + progress-per-symbol + done events on the happy path", async () => {
+    // backfillWatchlist now calls options.onSymbol for each symbol.
+    sourceMock.backfillWatchlist.mockImplementation(async (_years, opts) => {
+      await opts?.onSymbol?.({
+        symbol: "AAPL",
+        processed: 1,
+        total: 2,
+        barsWrittenThisSymbol: 1260,
+        status: "ok",
+      });
+      await opts?.onSymbol?.({
+        symbol: "MSFT",
+        processed: 2,
+        total: 2,
+        barsWrittenThisSymbol: 1260,
+        status: "ok",
+      });
+      return {
+        totalSymbols: 2,
+        succeeded: 2,
+        empty: 0,
+        errored: 0,
+        totalBarsWritten: 2520,
+      };
     });
     const res = await postBackfill({ json: async () => ({}) } as never);
-    const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body.totalBarsWritten).toBe(3700);
-    expect(sourceMock.backfillWatchlist).toHaveBeenCalledWith(5);
+    expect(res.headers.get("content-type")).toMatch(/x-ndjson/);
+    const events = (await readNdjsonStream(res)) as Array<{ kind: string }>;
+    expect(events.map((e) => e.kind)).toEqual([
+      "start",
+      "progress",
+      "progress",
+      "done",
+    ]);
+    expect(sourceMock.backfillWatchlist).toHaveBeenCalledWith(
+      5,
+      expect.objectContaining({ onSymbol: expect.any(Function) })
+    );
   });
 
   it("respects an explicit years parameter", async () => {
@@ -61,8 +109,12 @@ describe("POST /api/historical/backfill", () => {
       errored: 0,
       totalBarsWritten: 252,
     });
-    await postBackfill(makeRequest({ years: 1 }) as never);
-    expect(sourceMock.backfillWatchlist).toHaveBeenCalledWith(1);
+    const res = await postBackfill(makeRequest({ years: 1 }) as never);
+    await readNdjsonStream(res); // drain
+    expect(sourceMock.backfillWatchlist).toHaveBeenCalledWith(
+      1,
+      expect.any(Object)
+    );
   });
 
   it("tolerates an unparseable body (defaults applied)", async () => {
@@ -79,7 +131,11 @@ describe("POST /api/historical/backfill", () => {
       },
     } as never);
     expect(res.status).toBe(200);
-    expect(sourceMock.backfillWatchlist).toHaveBeenCalledWith(5);
+    await readNdjsonStream(res);
+    expect(sourceMock.backfillWatchlist).toHaveBeenCalledWith(
+      5,
+      expect.any(Object)
+    );
   });
 
   it("returns 400 on a years value outside the allowed range", async () => {
@@ -97,10 +153,19 @@ describe("POST /api/historical/backfill", () => {
     expect(res.status).toBe(400);
   });
 
-  it("returns 500 + logs when backfill throws", async () => {
+  it("emits an inline error event + logs when backfill throws mid-stream", async () => {
     sourceMock.backfillWatchlist.mockRejectedValue(new Error("yahoo down"));
     const res = await postBackfill({ json: async () => ({}) } as never);
-    expect(res.status).toBe(500);
+    // Even on failure the response is 200 — the error surfaces as a
+    // stream event so the client can render it inline.
+    expect(res.status).toBe(200);
+    const events = (await readNdjsonStream(res)) as Array<{
+      kind: string;
+      message?: string;
+    }>;
+    const errorEvent = events.find((e) => e.kind === "error");
+    expect(errorEvent).toBeDefined();
+    expect(errorEvent!.message).toBe("yahoo down");
     expect(loggerMock.log.error).toHaveBeenCalledWith(
       "api.historical",
       "backfill.error",

@@ -240,6 +240,107 @@ describe("backfillWatchlist", () => {
     );
   });
 
+  it("fires onSymbol for each symbol with correct event shape", async () => {
+    dbMock.watchlistStock.findMany = vi
+      .fn()
+      .mockResolvedValue([{ symbol: "AAA" }, { symbol: "BBB" }]);
+    yahooChartMock
+      .mockResolvedValueOnce({ quotes: [bar("2026-01-05T00:00:00Z")] })
+      .mockResolvedValueOnce({ quotes: [] });
+    throttleMock.mockImplementation(async (opts) => {
+      for (let i = 0; i < opts.items.length; i++) {
+        await opts.run(opts.items[i], i);
+      }
+      return {
+        total: opts.items.length,
+        succeeded: 0,
+        skipped: 0,
+        rateLimited: 0,
+        errored: 0,
+      };
+    });
+
+    const events: unknown[] = [];
+    await backfillWatchlist(1, {
+      onSymbol: (e) => {
+        events.push(e);
+      },
+    });
+    expect(events).toEqual([
+      {
+        symbol: "AAA",
+        processed: 1,
+        total: 2,
+        barsWrittenThisSymbol: 1,
+        status: "ok",
+      },
+      {
+        symbol: "BBB",
+        processed: 2,
+        total: 2,
+        barsWrittenThisSymbol: 0,
+        status: "empty",
+      },
+    ]);
+  });
+
+  it("fires onSymbol with status=error when the symbol fetch fails", async () => {
+    dbMock.watchlistStock.findMany = vi
+      .fn()
+      .mockResolvedValue([{ symbol: "FAIL" }]);
+    yahooChartMock.mockRejectedValue(new Error("nope"));
+    throttleMock.mockImplementation(async (opts) => {
+      for (let i = 0; i < opts.items.length; i++) {
+        await opts.run(opts.items[i], i);
+      }
+      return {
+        total: 1,
+        succeeded: 0,
+        skipped: 0,
+        rateLimited: 0,
+        errored: 0,
+      };
+    });
+    const events: unknown[] = [];
+    await backfillWatchlist(1, {
+      onSymbol: (e) => events.push(e),
+    });
+    expect((events[0] as { status: string }).status).toBe("error");
+  });
+
+  it("swallows a throw inside onSymbol so the loop keeps running", async () => {
+    dbMock.watchlistStock.findMany = vi
+      .fn()
+      .mockResolvedValue([{ symbol: "AAA" }, { symbol: "BBB" }]);
+    yahooChartMock.mockResolvedValue({ quotes: [bar("2026-01-05T00:00:00Z")] });
+    throttleMock.mockImplementation(async (opts) => {
+      for (let i = 0; i < opts.items.length; i++) {
+        await opts.run(opts.items[i], i);
+      }
+      return {
+        total: 2,
+        succeeded: 2,
+        skipped: 0,
+        rateLimited: 0,
+        errored: 0,
+      };
+    });
+    let invocations = 0;
+    await backfillWatchlist(1, {
+      onSymbol: () => {
+        invocations += 1;
+        throw new Error("callback boom");
+      },
+    });
+    // Both symbols processed despite the callback throwing.
+    expect(invocations).toBe(2);
+    expect(loggerMock.log.warn).toHaveBeenCalledWith(
+      "historical",
+      "onSymbol.callback.failure",
+      expect.any(Object)
+    );
+  });
+
   it("handles an empty watchlist gracefully", async () => {
     dbMock.watchlistStock.findMany = vi.fn().mockResolvedValue([]);
     throttleMock.mockImplementation(async () => ({

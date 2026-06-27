@@ -11,6 +11,10 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Sparkline } from "@/components/sparkline";
+import {
+  BackfillProgressCard,
+  type BackfillProgress,
+} from "@/components/backfill-progress-card";
 import { log } from "@/lib/logger";
 
 interface SymbolSummary {
@@ -28,6 +32,21 @@ interface BackfillSummary {
   errored: number;
   totalBarsWritten: number;
 }
+
+// NDJSON event shapes streamed from the backfill API.
+type BackfillEvent =
+  | { kind: "start"; years: number }
+  | {
+      kind: "progress";
+      symbol: string;
+      processed: number;
+      total: number;
+      barsWrittenThisSymbol: number;
+      status: "ok" | "empty" | "error";
+    }
+  | ({ kind: "done" } & BackfillSummary)
+  | { kind: "error"; message: string };
+
 
 interface BarRow {
   date: string;
@@ -47,6 +66,7 @@ export default function HistoricalPage() {
   const [summaries, setSummaries] = useState<SymbolSummary[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [backfilling, setBackfilling] = useState(false);
+  const [progress, setProgress] = useState<BackfillProgress | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [barsBySymbol, setBarsBySymbol] = useState<Record<string, BarRow[]>>(
     {}
@@ -75,25 +95,102 @@ export default function HistoricalPage() {
 
   const handleBackfill = async () => {
     setBackfilling(true);
+    setProgress({
+      startedAt: Date.now(),
+      currentSymbol: null,
+      processed: 0,
+      total: 0,
+      succeeded: 0,
+      empty: 0,
+      errored: 0,
+      totalBarsWritten: 0,
+    });
     try {
       const res = await fetch("/api/historical/backfill", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ years: 5 }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as BackfillSummary;
-      toast.success(
-        `Backfill done: ${body.succeeded}/${body.totalSymbols} symbols, ` +
-          `${body.totalBarsWritten.toLocaleString()} bars written ` +
-          `(${body.empty} empty, ${body.errored} errored).`
-      );
-      await fetchSummaries();
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      // Read NDJSON stream line-by-line. Buffer holds the partial line
+      // from the last chunk (network boundaries don't respect \n).
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let doneSummary: BackfillSummary | null = null;
+      let streamError: string | null = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
+          if (!line.trim()) continue;
+          let event: BackfillEvent;
+          try {
+            event = JSON.parse(line) as BackfillEvent;
+          } catch {
+            // Malformed line — skip rather than fail the whole stream.
+            log.warn("historical-page", "stream.parse.failure", { line });
+            continue;
+          }
+          if (event.kind === "progress") {
+            setProgress((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    currentSymbol: event.symbol,
+                    processed: event.processed,
+                    total: event.total,
+                    succeeded:
+                      event.status === "ok"
+                        ? prev.succeeded + 1
+                        : prev.succeeded,
+                    empty:
+                      event.status === "empty" ? prev.empty + 1 : prev.empty,
+                    errored:
+                      event.status === "error"
+                        ? prev.errored + 1
+                        : prev.errored,
+                    totalBarsWritten:
+                      prev.totalBarsWritten + event.barsWrittenThisSymbol,
+                  }
+                : prev
+            );
+          } else if (event.kind === "done") {
+            doneSummary = event;
+          } else if (event.kind === "error") {
+            streamError = event.message;
+          }
+          // "start" event is informational; no UI change needed.
+        }
+      }
+
+      if (streamError) throw new Error(streamError);
+      if (doneSummary) {
+        toast.success(
+          `Backfill done: ${doneSummary.succeeded}/${doneSummary.totalSymbols} symbols, ` +
+            `${doneSummary.totalBarsWritten.toLocaleString()} bars written ` +
+            `(${doneSummary.empty} empty, ${doneSummary.errored} errored).`
+        );
+        await fetchSummaries();
+      } else {
+        // Stream ended without a "done" event — log + tolerate.
+        log.warn("historical-page", "stream.no-done-event", {});
+        toast.error("Backfill finished but no summary received — check /logs.");
+      }
     } catch (err) {
       log.warn("historical-page", "backfill.failure", { error: err });
       toast.error("Backfill failed — check /logs.");
     } finally {
       setBackfilling(false);
+      setProgress(null);
     }
   };
 
@@ -138,6 +235,8 @@ export default function HistoricalPage() {
           {backfilling ? "Backfilling…" : "Backfill watchlist (5y)"}
         </button>
       </div>
+
+      {progress && <BackfillProgressCard progress={progress} />}
 
       {loading ? (
         <div className="text-slate-500 text-sm">Loading…</div>

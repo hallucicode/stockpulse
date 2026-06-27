@@ -154,14 +154,38 @@ export interface BackfillWatchlistSummary {
   totalBarsWritten: number;
 }
 
+/** Per-symbol event emitted as a watchlist backfill progresses. */
+export interface BackfillSymbolEvent {
+  symbol: string;
+  /** 1-indexed position in the queue (1 = first symbol processed). */
+  processed: number;
+  /** Total symbols on the watchlist for this run. */
+  total: number;
+  barsWrittenThisSymbol: number;
+  status: "ok" | "empty" | "error";
+}
+
+export interface BackfillWatchlistOptions {
+  /**
+   * Fired after each symbol completes. Use for progress UIs that
+   * need per-symbol granularity (eg. streaming NDJSON to the client).
+   * Throws inside the callback are swallowed — never block the loop.
+   */
+  onSymbol?: (event: BackfillSymbolEvent) => void | Promise<void>;
+}
+
 /**
  * Backfill every symbol on the watchlist for the last `years` years.
  *
  * Serial with per-symbol spacing (Yahoo doesn't love hundreds of
  * parallel chart requests). Aggregates results into a single summary.
+ *
+ * Pass `options.onSymbol` to receive per-symbol events as the loop runs.
+ * Behaviour identical with or without the callback.
  */
 export async function backfillWatchlist(
-  years: number
+  years: number,
+  options: BackfillWatchlistOptions = {}
 ): Promise<BackfillWatchlistSummary> {
   const stocks = await db.watchlistStock.findMany({
     select: { symbol: true },
@@ -179,19 +203,44 @@ export async function backfillWatchlist(
   const summary = await serialThrottle({
     items: stocks.map((s) => s.symbol),
     spacingMs: SYMBOL_SPACING_MS,
-    run: async (symbol) => {
+    run: async (symbol, index) => {
       const result = await backfillSymbol(symbol, years);
       totalBarsWritten += result.barsWritten;
+      let status: BackfillSymbolEvent["status"];
+      let throttleKind: "ok" | "skipped" | "error";
       if (result.error) {
         errored += 1;
-        return { kind: "error" };
-      }
-      if (result.empty) {
+        status = "error";
+        throttleKind = "error";
+      } else if (result.empty) {
         empty += 1;
-        return { kind: "skipped" };
+        status = "empty";
+        throttleKind = "skipped";
+      } else {
+        succeeded += 1;
+        status = "ok";
+        throttleKind = "ok";
       }
-      succeeded += 1;
-      return { kind: "ok" };
+
+      if (options.onSymbol) {
+        try {
+          await options.onSymbol({
+            symbol,
+            processed: index + 1,
+            total: stocks.length,
+            barsWrittenThisSymbol: result.barsWritten,
+            status,
+          });
+        } catch (err) {
+          // Never let a UI/stream-progress callback fail the backfill.
+          log.warn("historical", "onSymbol.callback.failure", {
+            symbol,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      return { kind: throttleKind };
     },
   });
 

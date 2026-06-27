@@ -70,6 +70,27 @@ function mockFetch(handlers: Record<string, () => unknown>) {
   }) as unknown as typeof fetch;
 }
 
+/**
+ * Build a Response body that streams pre-baked NDJSON events. Used by the
+ * backfill-page tests since the API now streams instead of returning JSON.
+ */
+function ndjsonStreamResponse(events: unknown[]): unknown {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const e of events) {
+        controller.enqueue(encoder.encode(JSON.stringify(e) + "\n"));
+      }
+      controller.close();
+    },
+  });
+  return {
+    ok: true,
+    status: 200,
+    body: stream,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -169,26 +190,123 @@ describe("HistoricalPage", () => {
     });
   });
 
-  it("triggers backfill on button click and toasts the summary", async () => {
-    mockFetch({
-      "/api/historical/symbols": () => ({
-        count: SUMMARIES.length,
-        summaries: SUMMARIES,
-      }),
-      "/api/historical/backfill": () => ({
-        totalSymbols: 3,
-        succeeded: 2,
-        empty: 1,
-        errored: 0,
-        totalBarsWritten: 2520,
-      }),
-    });
+  it("triggers backfill on button click, renders the progress card, toasts the final summary", async () => {
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/api/historical/symbols")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            count: SUMMARIES.length,
+            summaries: SUMMARIES,
+          }),
+        });
+      }
+      if (url.includes("/api/historical/backfill")) {
+        return Promise.resolve(
+          ndjsonStreamResponse([
+            { kind: "start", years: 5 },
+            {
+              kind: "progress",
+              symbol: "AAPL",
+              processed: 1,
+              total: 3,
+              barsWrittenThisSymbol: 1260,
+              status: "ok",
+            },
+            {
+              kind: "progress",
+              symbol: "GME",
+              processed: 2,
+              total: 3,
+              barsWrittenThisSymbol: 0,
+              status: "empty",
+            },
+            {
+              kind: "progress",
+              symbol: "AMC",
+              processed: 3,
+              total: 3,
+              barsWrittenThisSymbol: 1260,
+              status: "ok",
+            },
+            {
+              kind: "done",
+              totalSymbols: 3,
+              succeeded: 2,
+              empty: 1,
+              errored: 0,
+              totalBarsWritten: 2520,
+            },
+          ])
+        );
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    }) as unknown as typeof fetch;
     render(<HistoricalPage />);
     await waitFor(() => screen.getByText("AAPL"));
     fireEvent.click(screen.getByText(/Backfill watchlist/));
     await waitFor(() => {
       expect(toast.success).toHaveBeenCalledWith(
         expect.stringMatching(/Backfill done: 2\/3 symbols/)
+      );
+    });
+  });
+
+  it("surfaces a stream-error event as a toast.error", async () => {
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/api/historical/symbols")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ count: 0, summaries: SUMMARIES }),
+        });
+      }
+      if (url.includes("/api/historical/backfill")) {
+        return Promise.resolve(
+          ndjsonStreamResponse([
+            { kind: "start", years: 5 },
+            { kind: "error", message: "yahoo down" },
+          ])
+        );
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    }) as unknown as typeof fetch;
+    render(<HistoricalPage />);
+    await waitFor(() => screen.getByText("AAPL"));
+    fireEvent.click(screen.getByText(/Backfill watchlist/));
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/Backfill failed/)
+      );
+    });
+  });
+
+  it("warns when the stream ends without a 'done' event", async () => {
+    global.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/api/historical/symbols")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ count: 0, summaries: SUMMARIES }),
+        });
+      }
+      if (url.includes("/api/historical/backfill")) {
+        return Promise.resolve(
+          ndjsonStreamResponse([
+            { kind: "start", years: 5 },
+            // stream ends after start, no progress, no done.
+          ])
+        );
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    }) as unknown as typeof fetch;
+    render(<HistoricalPage />);
+    await waitFor(() => screen.getByText("AAPL"));
+    fireEvent.click(screen.getByText(/Backfill watchlist/));
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/finished but no summary/)
       );
     });
   });
