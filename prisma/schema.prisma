@@ -136,6 +136,26 @@ model HistoricalBar {
   @@index([symbol, date])
 }
 
+/// Persisted backtest run — Phase 15b (walk-forward simulator).
+///
+/// One row per completed backtest. `paramsJson` carries the input
+/// envelope (symbols, date range, starting capital). `resultJson`
+/// carries the trade list + equity curve + summary metrics. Both are
+/// stored as serialised JSON so the schema doesn't need to change as
+/// metrics evolve in 15c/15d.
+///
+/// Append-only — never updated, never pruned. Past runs are how we
+/// see whether strategy revisions improved or regressed performance.
+model BacktestRun {
+  id           String   @id @default(cuid())
+  paramsJson   String   // JSON: { symbols[], startDate, endDate, startingCapital }
+  resultJson   String   // JSON: { trades[], equityCurve[], summary{} }
+  startedAt    DateTime @default(now())
+  completedAt  DateTime @default(now())
+
+  @@index([startedAt])
+}
+
 /// Cached price snapshots to avoid hitting APIs too often
 model PriceCache {
   id        String   @id @default(cuid())

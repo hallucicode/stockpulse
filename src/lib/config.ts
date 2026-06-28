@@ -691,6 +691,49 @@ export const DATA_QUALITY_CONFIG = {
   minHistoryBars: 5,
 } as const;
 
+// ─── Backtest engine tuning (Phase 15b) ───
+//
+// All knobs that drive the walk-forward simulator + realistic execution
+// model live here. Spread tiers are *modelled* (Yahoo doesn't serve
+// bid/ask), validated against the well-known TAQ-data rule of thumb of
+// 5–10 bps for liquid large caps and 50–100 bps for sub-$5M ADV names.
+export interface BacktestConfig {
+  /**
+   * Bars consumed by warmup before any signal is checked. = max of
+   * SMA50 + MACD slow + a margin. Keeps indicator math from operating
+   * on partial windows during the first ~50 days of the test range.
+   */
+  warmupBars: number;
+  /** Default portfolio value for a fresh backtest run. */
+  defaultStartingCapital: number;
+  /** Cap on simultaneously-open positions. v1 keeps it conservative. */
+  maxOpenPositions: number;
+  /** Avg dollar-volume threshold above which spread = lowSpreadPct. */
+  highVolumeDollarThreshold: number;
+  /** Avg dollar-volume threshold below which spread = highSpreadPct. */
+  lowVolumeDollarThreshold: number;
+  /** Spread for liquid names (≥ highVolumeDollarThreshold). */
+  lowSpreadPct: number;
+  /** Spread for illiquid names (≤ lowVolumeDollarThreshold). */
+  highSpreadPct: number;
+  /**
+   * Trailing window for the per-symbol avg dollar volume used in the
+   * spread model. 20 trading days ≈ one calendar month.
+   */
+  avgVolumeLookbackBars: number;
+}
+
+export const BACKTEST_CONFIG: BacktestConfig = {
+  warmupBars: 50,
+  defaultStartingCapital: 50_000,
+  maxOpenPositions: 10,
+  highVolumeDollarThreshold: 50_000_000,
+  lowVolumeDollarThreshold: 5_000_000,
+  lowSpreadPct: 0.0005,
+  highSpreadPct: 0.005,
+  avgVolumeLookbackBars: 20,
+} as const;
+
 // ─── Background fetcher tuning ───
 export const FETCHER_CONFIG = {
   batchSize: 10,

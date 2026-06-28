@@ -68,6 +68,8 @@ const PERSISTED_INFO_EVENTS: ReadonlySet<string> = new Set([
   "historical:backfill.start",
   "historical:backfill.done",
   "historical:fetch.empty",
+  "backtest:run.start",
+  "backtest:run.done",
   "audit-log:prune.done",
   "discovery:watchlist.added",
   "notifications:skip.no-topic",

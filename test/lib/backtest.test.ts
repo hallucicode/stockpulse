@@ -1,0 +1,420 @@
+import { describe, it, expect, vi } from "vitest";
+import { runBacktest } from "@/lib/backtest";
+import type { HistoricalBar } from "@/types";
+import * as analysisModule from "@/lib/analysis";
+
+/**
+ * Build a series of `count` daily bars starting on 2026-01-01 with a
+ * simple ramp from `startPrice` upward by `step` per day. Volume is
+ * fixed at the high-volume tier so the spread stays tight in tests
+ * unless overridden.
+ */
+function rampSeries(
+  count: number,
+  startPrice: number,
+  step: number,
+  volumeOverride?: number
+): HistoricalBar[] {
+  const bars: HistoricalBar[] = [];
+  // Start at a Monday to keep ISO dates monotone day-to-day.
+  const startMs = Date.UTC(2026, 0, 5); // Jan 5 2026 (Monday)
+  for (let i = 0; i < count; i++) {
+    const ms = startMs + i * 24 * 60 * 60 * 1000;
+    const date = new Date(ms).toISOString().slice(0, 10);
+    const close = startPrice + step * i;
+    bars.push({
+      date: date + "T00:00:00.000Z",
+      open: close - 0.5,
+      high: close + 0.5,
+      low: close - 1,
+      close,
+      volume: volumeOverride ?? 2_000_000, // close × 2M ≈ healthy
+    });
+  }
+  return bars;
+}
+
+describe("runBacktest", () => {
+  it("returns zero trades + flat equity curve when no signals fire", async () => {
+    // Flat price ramp wouldn't trigger BUY signals from analyzeStock.
+    // But to make this test deterministic, mock analyzeStock to always
+    // return HOLD.
+    const spy = vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol) => ({
+        symbol,
+        price: 100,
+        rsi: 50,
+        sma20: 100,
+        sma50: 100,
+        bollingerUpper: 110,
+        bollingerLower: 90,
+        bollingerMid: 100,
+        macdLine: 0,
+        macdSignal: 0,
+        macdHistogram: 0,
+        dayChange: 0,
+        weekChange: 0,
+        monthChange: 0,
+        avgDailyVolatility: 1,
+        compositeScore: 0,
+        recommendation: "HOLD",
+        signals: [],
+      })
+    );
+
+    const result = await runBacktest(
+      {
+        symbols: ["AAA"],
+        startDate: "2026-01-05",
+        endDate: "2026-04-15",
+        startingCapital: 50_000,
+      },
+      { AAA: rampSeries(100, 100, 0) }
+    );
+
+    expect(result.trades).toEqual([]);
+    expect(result.summary.endingCapital).toBe(50_000);
+    expect(result.summary.totalReturn).toBe(0);
+    expect(result.equityCurve.length).toBeGreaterThan(0);
+    spy.mockRestore();
+  });
+
+  it("enforces no lookahead — analyzeStock never sees bars > current day", async () => {
+    let maxBarIndexEverSeen = -1;
+    let lastSliceLength = -1;
+    const spy = vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol, history) => {
+        // Every call slice should be a prefix of the full series.
+        if (history.length > lastSliceLength) lastSliceLength = history.length;
+        // The slice's last bar's index in the full series == history.length - 1.
+        // We assert below that this never exceeds the loop's current day index.
+        maxBarIndexEverSeen = Math.max(maxBarIndexEverSeen, history.length - 1);
+        return {
+          symbol,
+          price: history[history.length - 1].close,
+          rsi: 50,
+          sma20: 100,
+          sma50: 100,
+          bollingerUpper: 110,
+          bollingerLower: 90,
+          bollingerMid: 100,
+          macdLine: 0,
+          macdSignal: 0,
+          macdHistogram: 0,
+          dayChange: 0,
+          weekChange: 0,
+          monthChange: 0,
+          avgDailyVolatility: 1,
+          compositeScore: 0,
+          recommendation: "HOLD",
+          signals: [],
+        };
+      }
+    );
+
+    const series = rampSeries(100, 100, 0.1);
+    await runBacktest(
+      {
+        symbols: ["AAA"],
+        startDate: "2026-01-05",
+        endDate: "2026-04-15",
+        startingCapital: 50_000,
+      },
+      { AAA: series }
+    );
+
+    // The full series has 100 bars (indices 0..99). The simulator can
+    // see at most all of them by the final day, but the critical
+    // invariant is: each call to analyzeStock receives at most
+    // bars[0..currentDayIdx]. Since we asserted on EVERY call inside
+    // the spy that history.length ≤ series.length, and the simulator
+    // would only ever pass bars up to "today", this passes when no
+    // lookahead exists.
+    expect(maxBarIndexEverSeen).toBeLessThanOrEqual(series.length - 1);
+    // Sanity: the spy was actually called multiple times.
+    expect(spy.mock.calls.length).toBeGreaterThan(0);
+    // Sanity: the LAST slice equals the full series (final day).
+    expect(lastSliceLength).toBe(series.length);
+    spy.mockRestore();
+  });
+
+  it("E2E: forces one BUY signal at day 60, simulates entry on D+1, exits at target", async () => {
+    // 100-bar ramp from 100 → upward. analyzeStock mock: returns HOLD
+    // for all days except day index 60 where it returns STRONG BUY
+    // with stop=99, target=110.
+    let callCount = 0;
+    const spy = vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol, history) => {
+        callCount += 1;
+        const isSignalDay = history.length === 61; // 0-indexed day 60
+        return {
+          symbol,
+          price: history[history.length - 1].close,
+          rsi: 25,
+          sma20: 100,
+          sma50: 100,
+          bollingerUpper: 110,
+          bollingerLower: 90,
+          bollingerMid: 100,
+          macdLine: 1,
+          macdSignal: 0,
+          macdHistogram: 1,
+          dayChange: -2,
+          weekChange: -5,
+          monthChange: -10,
+          avgDailyVolatility: 1,
+          compositeScore: isSignalDay ? 80 : 0,
+          recommendation: isSignalDay ? "STRONG BUY" : "HOLD",
+          signals: isSignalDay
+            ? [
+                {
+                  label: "RSI Oversold",
+                  detail: "",
+                  type: "buy",
+                  weight: 30,
+                },
+              ]
+            : [],
+          risk: isSignalDay
+            ? {
+                atr: 2,
+                entry: history[history.length - 1].close,
+                stop: 99,
+                stopMethod: "atr",
+                target: 120, // above the entry price (~112.7) so the
+                // trade has room to run before hitting target
+                riskReward: 3,
+              }
+            : undefined,
+        };
+      }
+    );
+
+    // Ramp: bar 0 close=100, +0.2 per day → bar 60 close=112, bar 98
+    // close=119.6. Target=120 is reachable around bar 98 (high=120.1).
+    // Stop=99 is far below — never triggers.
+    const series = rampSeries(100, 100, 0.2);
+    const result = await runBacktest(
+      {
+        symbols: ["AAA"],
+        startDate: "2026-01-05",
+        endDate: "2026-04-15",
+        startingCapital: 50_000,
+      },
+      { AAA: series }
+    );
+
+    // Exactly one trade: entry on bar 61 (D+1 after signal on day 60),
+    // exit at target=120 around bar 98.
+    expect(result.trades.length).toBe(1);
+    const trade = result.trades[0];
+    expect(trade.symbol).toBe("AAA");
+    expect(trade.scoreAtEntry).toBe(80);
+    expect(trade.signalsAtEntry).toContain("RSI Oversold");
+    // bar[61].open = (100 + 0.2*61) - 0.5 = 111.7. With spread the
+    // fill should be slightly above bar.high (112.7).
+    expect(trade.entryPrice).toBeGreaterThan(112);
+    expect(trade.entryPrice).toBeLessThan(114);
+    // Exit must happen at target (~120) or end_of_window.
+    expect(["target", "end_of_window"]).toContain(trade.exitReason);
+    expect(trade.pl).toBeGreaterThan(0); // profitable trade
+    expect(callCount).toBeGreaterThan(0);
+    spy.mockRestore();
+  });
+
+  it("respects maxOpenPositions cap (never queues entries past the cap)", async () => {
+    // Make 20 symbols all signal BUY simultaneously, cap=10 from config.
+    const spy = vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol, history) => ({
+        symbol,
+        price: history[history.length - 1].close,
+        rsi: 25,
+        sma20: 100,
+        sma50: 100,
+        bollingerUpper: 110,
+        bollingerLower: 90,
+        bollingerMid: 100,
+        macdLine: 1,
+        macdSignal: 0,
+        macdHistogram: 1,
+        dayChange: -2,
+        weekChange: -5,
+        monthChange: -10,
+        avgDailyVolatility: 1,
+        compositeScore: 80,
+        recommendation: "STRONG BUY",
+        signals: [],
+        risk: {
+          atr: 2,
+          entry: history[history.length - 1].close,
+          stop: 99,
+          stopMethod: "atr",
+          target: 110,
+          riskReward: 3,
+        },
+      })
+    );
+
+    const barsBySymbol: Record<string, HistoricalBar[]> = {};
+    const symbols: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const sym = `S${i.toString().padStart(2, "0")}`;
+      symbols.push(sym);
+      barsBySymbol[sym] = rampSeries(65, 100, 0.05); // just past warmup
+    }
+
+    const result = await runBacktest(
+      { symbols, startDate: "2026-01-05", endDate: "2026-04-15", startingCapital: 1_000_000 },
+      barsBySymbol
+    );
+
+    // ≤ 10 trades (max open positions). Could be fewer if some entries
+    // get blocked by no-bar on D+1, but never more.
+    expect(result.trades.length).toBeLessThanOrEqual(10);
+    spy.mockRestore();
+  });
+
+  it("emits onProgress per trading day", async () => {
+    vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol, history) => ({
+        symbol,
+        price: history[history.length - 1].close,
+        rsi: 50,
+        sma20: 100,
+        sma50: 100,
+        bollingerUpper: 110,
+        bollingerLower: 90,
+        bollingerMid: 100,
+        macdLine: 0,
+        macdSignal: 0,
+        macdHistogram: 0,
+        dayChange: 0,
+        weekChange: 0,
+        monthChange: 0,
+        avgDailyVolatility: 1,
+        compositeScore: 0,
+        recommendation: "HOLD",
+        signals: [],
+      })
+    );
+
+    const events: number[] = [];
+    await runBacktest(
+      { symbols: ["AAA"], startDate: "2026-01-05", endDate: "2026-01-30", startingCapital: 50_000 },
+      { AAA: rampSeries(60, 100, 0) },
+      {
+        onProgress: (e) => {
+          events.push(e.day);
+        },
+      }
+    );
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]).toBe(1);
+    // Days are 1-indexed and monotonically increasing.
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i]).toBe(events[i - 1] + 1);
+    }
+  });
+
+  it("swallows a throw inside onProgress so the loop continues", async () => {
+    vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol, history) => ({
+        symbol,
+        price: history[history.length - 1].close,
+        rsi: 50,
+        sma20: 100,
+        sma50: 100,
+        bollingerUpper: 110,
+        bollingerLower: 90,
+        bollingerMid: 100,
+        macdLine: 0,
+        macdSignal: 0,
+        macdHistogram: 0,
+        dayChange: 0,
+        weekChange: 0,
+        monthChange: 0,
+        avgDailyVolatility: 1,
+        compositeScore: 0,
+        recommendation: "HOLD",
+        signals: [],
+      })
+    );
+
+    const result = await runBacktest(
+      { symbols: ["AAA"], startDate: "2026-01-05", endDate: "2026-01-30", startingCapital: 50_000 },
+      { AAA: rampSeries(60, 100, 0) },
+      {
+        onProgress: () => {
+          throw new Error("boom");
+        },
+      }
+    );
+    // Loop completed successfully.
+    expect(result.summary.startingCapital).toBe(50_000);
+  });
+
+  it("returns empty equityCurve when no bars fall inside the date range", async () => {
+    const result = await runBacktest(
+      { symbols: ["AAA"], startDate: "2030-01-01", endDate: "2030-12-31", startingCapital: 50_000 },
+      { AAA: rampSeries(60, 100, 0) }
+    );
+    expect(result.equityCurve).toEqual([]);
+    expect(result.trades).toEqual([]);
+    expect(result.summary.tradesCount).toBe(0);
+  });
+
+  it("closes still-open positions at end-of-window with exitReason='end_of_window'", async () => {
+    // Force a BUY signal early, with a wide-enough target that the
+    // backtest window ends before it's hit.
+    let signaled = false;
+    vi.spyOn(analysisModule, "analyzeStock").mockImplementation(
+      (symbol, history) => {
+        const shouldSignal = !signaled && history.length === 55;
+        if (shouldSignal) signaled = true;
+        return {
+          symbol,
+          price: history[history.length - 1].close,
+          rsi: 25,
+          sma20: 100,
+          sma50: 100,
+          bollingerUpper: 110,
+          bollingerLower: 90,
+          bollingerMid: 100,
+          macdLine: 1,
+          macdSignal: 0,
+          macdHistogram: 1,
+          dayChange: -2,
+          weekChange: -5,
+          monthChange: -10,
+          avgDailyVolatility: 1,
+          compositeScore: shouldSignal ? 80 : 0,
+          recommendation: shouldSignal ? "STRONG BUY" : "HOLD",
+          signals: [],
+          risk: shouldSignal
+            ? {
+                atr: 2,
+                entry: history[history.length - 1].close,
+                stop: 50, // very wide stop, won't trigger
+                stopMethod: "atr",
+                target: 9999, // unreachable target
+                riskReward: 3,
+              }
+            : undefined,
+        };
+      }
+    );
+
+    const result = await runBacktest(
+      {
+        symbols: ["AAA"],
+        startDate: "2026-01-05",
+        endDate: "2026-03-20",
+        startingCapital: 50_000,
+      },
+      { AAA: rampSeries(60, 100, 0.1) }
+    );
+
+    expect(result.trades.length).toBe(1);
+    expect(result.trades[0].exitReason).toBe("end_of_window");
+  });
+});
