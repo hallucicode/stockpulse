@@ -303,7 +303,9 @@ describe("backfillWatchlist", () => {
     });
     const events: unknown[] = [];
     await backfillWatchlist(1, {
-      onSymbol: (e) => events.push(e),
+      onSymbol: (e) => {
+        events.push(e);
+      },
     });
     expect((events[0] as { status: string }).status).toBe("error");
   });
