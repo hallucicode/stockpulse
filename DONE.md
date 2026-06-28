@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 14 (~47 days of build time).
+**Done so far:** Phases 0 through 14 + 15a (~49 days of build time).
 
 ---
 
@@ -743,3 +743,67 @@ After the first commit hit the PR, real-user testing surfaced two concrete defec
 **Effort for the rework:** ~3 hours.
 
 ### Total Phase 14 effort: **2.5 days** (vs 3 estimated). The first cut was 2 days; the in-PR rework was the second half-day. PR was held open through the rework; merge happens once you sign off on this updated state.
+
+---
+
+## Phase 15a — Backtest: historical data + viewer ✅ DONE *(first sub-phase of Phase 15 split)*
+
+**Why split:** Phase 15 (backtest engine) is a 7-10 day block. Splitting into 15a (data + viewer) / 15b (walk-forward simulator + minimal UI) / 15c (metrics + attribution) / 15d (charts + polish) lets each sub-phase ship as its own reviewable PR with UI from day one, isolates failures cleanly, and gives an early stop point if the strategy turns out unworkable.
+
+**Why UI from day one:** the user explicitly asked for a UI surface in every sub-phase — "I want to use UI not CLI from the very beginning — it impacts my understanding of what's happening." 15a's `/historical` page makes data quality visible *before* 15b's simulator depends on it.
+
+**Shipped:**
+
+### Prisma
+- **`HistoricalBar`** model — `(id, symbol, date, open, high, low, close, volume, adjClose?)` with `@@unique([symbol, date])` and `@@index([symbol, date])`. Append-only by uniqueness — re-running backfill upserts in place. `adjClose` captured but not applied (splits/dividends correction deferred to backlog).
+
+### Edge module — `src/lib/historical-bars-source.ts`
+- **`backfillSymbol(symbol, years)`** — pulls daily bars from Yahoo's `chart()` endpoint, filters out partial/halted rows (any non-finite OHLCV or invalid date is dropped), upserts in 200-row chunks. Returns typed `BackfillSymbolResult` — never throws. Network / parse / persist failures log + report counts.
+- **`backfillWatchlist(years, { onSymbol? })`** — walks `WatchlistStock` via the Phase 10 `serialThrottle` (1.1s spacing, well under Yahoo's effective rate limit). Optional `onSymbol` callback emits per-symbol events for streaming consumers (the Phase 15a.1 progress UI). Callback throws are swallowed so a buggy UI can never abort the backfill.
+- **`listSymbolSummaries()`** — per-symbol (count, first, last, gaps) view including watchlist symbols with zero bars (so the UI can flag missing data).
+- **`countLargeGaps(dates)`** — pure helper; counts windows > 4 days between consecutive bars (so weekends + a holiday don't count as a "gap"; a 10-day silence does).
+- **`getSymbolBars(symbol)`** — full series, date-ascending, ISO-stringified.
+
+### API routes
+- **`POST /api/historical/backfill`** — manual trigger, accepts optional `{ years }` (default 5, bounded 1–20). **Returns an NDJSON stream**: `{kind:"start"}` → `{kind:"progress",symbol,processed,total,barsWrittenThisSymbol,status}` per symbol → `{kind:"done",...}`. Even on mid-stream failure the response stays 200 — the error surfaces as `{kind:"error",message}` so the UI can render it inline.
+- **`GET /api/historical/symbols`** — `{count, summaries[]}` for the main table.
+- **`GET /api/historical/bars/[symbol]`** — full series for one symbol, auto-uppercased.
+
+### UI — `/historical` page
+- Table of watchlist symbols (count, first/last date, gaps). Bar count and gap count colour-coded amber when > 0.
+- Click any row to expand a 600×80 sparkline of close prices plus low/high/latest mini-stats.
+- **"Backfill watchlist (5y)" button** → live progress card appears instantly (Phase 15a.1):
+  ```
+  📥 Backfilling watchlist          2 / 980 · ETA 36 min
+  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  Now: TSLA                ✓ 2  — 0  ✗ 0  2,508 bars
+  ```
+  Per-symbol updates via streamed NDJSON parsed line-by-line. ETA extrapolated from elapsed/processed × remaining.
+- **`BackfillProgressCard`** extracted to `src/components/` (Next.js App Router only allows specific exports from page.tsx).
+
+### Health + logging
+- **`historical` component** in `HEALTH_SPECS` — `successEvents: ["backfill.done"]`, `startEvents: ["backfill.start"]`. Manual-trigger (no cron) so `refreshIntervalMs` is omitted. `ComponentSpec` + `ComponentHealth` types widened to make `refreshIntervalMs` optional; `formatInterval(undefined)` returns `"manual trigger"`.
+- Log-persistence whitelist extended with `historical:backfill.{start,done}` + `historical:fetch.empty`.
+
+### Tooling
+- `.claude/launch.json` gets `"autoPort": true` so the preview server picks a free port instead of erroring when the user has their own dev server on 3000.
+
+**Out of scope (deferred to Phase 15 follow-up backlog in `IMPLEMENTATION_PLAN.md`):**
+- Backfill cron (manual only by design — historical data doesn't change retroactively; the live `BarsCache` from Phase 0 covers recent days).
+- Splits / dividends correction (adjClose captured, not applied).
+- Halt detection (Yahoo doesn't tag halts cleanly; needs paid intraday data).
+- Background-job orchestration (acceptable for local dev + watchlist under ~1100 symbols; if it grows past Vercel's 1500s streaming cap, worth revisiting).
+
+**Tests & coverage:**
+- **23 historical-bars-source tests** — happy backfill, upsert call shape (idempotency), empty/undefined quotes, halted-bar filtering, invalid-date filtering, throw + non-Error throw, persist-mid-chunk failure, non-numeric adjClose nulled, backfillWatchlist aggregation + onSymbol callback (correct events, status=error path, callback-throw swallowed), empty watchlist, all five countLargeGaps branches, listSymbolSummaries with watchlist union, getSymbolBars ISO formatting + empty.
+- **11 API tests** — each route happy + every error path, NDJSON stream parsing helper, mid-stream error event.
+- **11 page tests** — render, empty state, expand sparkline, collapse, no-bars message, backfill button success (with mocked NDJSON stream), stream-error toast, stream-ends-without-done toast, loading state, fetch-failure no-crash.
+- **6 BackfillProgressCard tests** — formatEta branches (NaN, Infinity, negative, seconds, minutes), full render with elapsed-based ETA, starting state, final-tick.
+- **2 health tests** — optional refreshIntervalMs spec exists, formatInterval(undefined) returns "manual trigger".
+- **927 total tests pass** (was 874). Coverage **98.26 / 93.01 / 98.52 / 98.26** — all thresholds met; went up because new modules are at 100%.
+
+**In-PR rework story (Phase 15a.1):**
+
+The first cut shipped a silent `"Backfilling…"` button label for the full ~30 min Yahoo round-trip. After user feedback ("how do I run it? how often? what shows me progress?"), the Phase 15a.1 follow-up converted the backfill API to a streaming NDJSON response and built the live progress card. Same branch, three commits total. Browser-verified live: clicked button, immediate progress card, ticked per-symbol against real Yahoo to "2/980 · ETA 36 min · Now: TSLA".
+
+**Effort: ~2 days total** (1.5 d for 15a base + 0.5 d for 15a.1 progress UI rework).
