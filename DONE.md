@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 14 (~47 days of build time).
+**Done so far:** Phases 0 through 14 + 15a + 15b (~51 days of build time).
 
 ---
 
@@ -743,3 +743,158 @@ After the first commit hit the PR, real-user testing surfaced two concrete defec
 **Effort for the rework:** ~3 hours.
 
 ### Total Phase 14 effort: **2.5 days** (vs 3 estimated). The first cut was 2 days; the in-PR rework was the second half-day. PR was held open through the rework; merge happens once you sign off on this updated state.
+
+---
+
+## Phase 15a — Backtest: historical data + viewer ✅ DONE *(first sub-phase of Phase 15 split)*
+
+**Why split:** Phase 15 (backtest engine) is a 7-10 day block. Splitting into 15a (data + viewer) / 15b (walk-forward simulator + minimal UI) / 15c (metrics + attribution) / 15d (charts + polish) lets each sub-phase ship as its own reviewable PR with UI from day one, isolates failures cleanly, and gives an early stop point if the strategy turns out unworkable.
+
+**Why UI from day one:** the user explicitly asked for a UI surface in every sub-phase — "I want to use UI not CLI from the very beginning — it impacts my understanding of what's happening." 15a's `/historical` page makes data quality visible *before* 15b's simulator depends on it.
+
+**Shipped:**
+
+### Prisma
+- **`HistoricalBar`** model — `(id, symbol, date, open, high, low, close, volume, adjClose?)` with `@@unique([symbol, date])` and `@@index([symbol, date])`. Append-only by uniqueness — re-running backfill upserts in place. `adjClose` captured but not applied (splits/dividends correction deferred to backlog).
+
+### Edge module — `src/lib/historical-bars-source.ts`
+- **`backfillSymbol(symbol, years)`** — pulls daily bars from Yahoo's `chart()` endpoint, filters out partial/halted rows (any non-finite OHLCV or invalid date is dropped), upserts in 200-row chunks. Returns typed `BackfillSymbolResult` — never throws. Network / parse / persist failures log + report counts.
+- **`backfillWatchlist(years, { onSymbol? })`** — walks `WatchlistStock` via the Phase 10 `serialThrottle` (1.1s spacing, well under Yahoo's effective rate limit). Optional `onSymbol` callback emits per-symbol events for streaming consumers (the Phase 15a.1 progress UI). Callback throws are swallowed so a buggy UI can never abort the backfill.
+- **`listSymbolSummaries()`** — per-symbol (count, first, last, gaps) view including watchlist symbols with zero bars (so the UI can flag missing data).
+- **`countLargeGaps(dates)`** — pure helper; counts windows > 4 days between consecutive bars (so weekends + a holiday don't count as a "gap"; a 10-day silence does).
+- **`getSymbolBars(symbol)`** — full series, date-ascending, ISO-stringified.
+
+### API routes
+- **`POST /api/historical/backfill`** — manual trigger, accepts optional `{ years }` (default 5, bounded 1–20). **Returns an NDJSON stream**: `{kind:"start"}` → `{kind:"progress",symbol,processed,total,barsWrittenThisSymbol,status}` per symbol → `{kind:"done",...}`. Even on mid-stream failure the response stays 200 — the error surfaces as `{kind:"error",message}` so the UI can render it inline.
+- **`GET /api/historical/symbols`** — `{count, summaries[]}` for the main table.
+- **`GET /api/historical/bars/[symbol]`** — full series for one symbol, auto-uppercased.
+
+### UI — `/historical` page
+- Table of watchlist symbols (count, first/last date, gaps). Bar count and gap count colour-coded amber when > 0.
+- Click any row to expand a 600×80 sparkline of close prices plus low/high/latest mini-stats.
+- **"Backfill watchlist (5y)" button** → live progress card appears instantly (Phase 15a.1):
+  ```
+  📥 Backfilling watchlist          2 / 980 · ETA 36 min
+  ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  Now: TSLA                ✓ 2  — 0  ✗ 0  2,508 bars
+  ```
+  Per-symbol updates via streamed NDJSON parsed line-by-line. ETA extrapolated from elapsed/processed × remaining.
+- **`BackfillProgressCard`** extracted to `src/components/` (Next.js App Router only allows specific exports from page.tsx).
+
+### Health + logging
+- **`historical` component** in `HEALTH_SPECS` — `successEvents: ["backfill.done"]`, `startEvents: ["backfill.start"]`. Manual-trigger (no cron) so `refreshIntervalMs` is omitted. `ComponentSpec` + `ComponentHealth` types widened to make `refreshIntervalMs` optional; `formatInterval(undefined)` returns `"manual trigger"`.
+- Log-persistence whitelist extended with `historical:backfill.{start,done}` + `historical:fetch.empty`.
+
+### Tooling
+- `.claude/launch.json` gets `"autoPort": true` so the preview server picks a free port instead of erroring when the user has their own dev server on 3000.
+
+**Out of scope (deferred to Phase 15 follow-up backlog in `IMPLEMENTATION_PLAN.md`):**
+- Backfill cron (manual only by design — historical data doesn't change retroactively; the live `BarsCache` from Phase 0 covers recent days).
+- Splits / dividends correction (adjClose captured, not applied).
+- Halt detection (Yahoo doesn't tag halts cleanly; needs paid intraday data).
+- Background-job orchestration (acceptable for local dev + watchlist under ~1100 symbols; if it grows past Vercel's 1500s streaming cap, worth revisiting).
+
+**Tests & coverage:**
+- **23 historical-bars-source tests** — happy backfill, upsert call shape (idempotency), empty/undefined quotes, halted-bar filtering, invalid-date filtering, throw + non-Error throw, persist-mid-chunk failure, non-numeric adjClose nulled, backfillWatchlist aggregation + onSymbol callback (correct events, status=error path, callback-throw swallowed), empty watchlist, all five countLargeGaps branches, listSymbolSummaries with watchlist union, getSymbolBars ISO formatting + empty.
+- **11 API tests** — each route happy + every error path, NDJSON stream parsing helper, mid-stream error event.
+- **11 page tests** — render, empty state, expand sparkline, collapse, no-bars message, backfill button success (with mocked NDJSON stream), stream-error toast, stream-ends-without-done toast, loading state, fetch-failure no-crash.
+- **6 BackfillProgressCard tests** — formatEta branches (NaN, Infinity, negative, seconds, minutes), full render with elapsed-based ETA, starting state, final-tick.
+- **2 health tests** — optional refreshIntervalMs spec exists, formatInterval(undefined) returns "manual trigger".
+- **927 total tests pass** (was 874). Coverage **98.26 / 93.01 / 98.52 / 98.26** — all thresholds met; went up because new modules are at 100%.
+
+**In-PR rework story (Phase 15a.1):**
+
+The first cut shipped a silent `"Backfilling…"` button label for the full ~30 min Yahoo round-trip. After user feedback ("how do I run it? how often? what shows me progress?"), the Phase 15a.1 follow-up converted the backfill API to a streaming NDJSON response and built the live progress card. Same branch, three commits total. Browser-verified live: clicked button, immediate progress card, ticked per-symbol against real Yahoo to "2/980 · ETA 36 min · Now: TSLA".
+
+**Effort: ~2 days total** (1.5 d for 15a base + 0.5 d for 15a.1 progress UI rework).
+
+---
+
+## Phase 15b — Backtest: walk-forward simulator + minimal UI ✅ DONE *(second sub-phase of Phase 15 split)*
+
+**Goal:** for each historical day in the test window, build per-symbol `Analysis` from bars[0..D] (no lookahead), check signals, simulate trades on D+1 with realistic execution (spread + slippage + gap-through-stop), log every trade. Stream progress to a minimal `/backtest` UI; persist each run to a `BacktestRun` row for later review.
+
+**Surprise discovery — the planned core refactor wasn't needed.** Phase 15a's plan called for extracting `analyzeBars(bars): Analysis` from `analyzeStock`. On reading `src/lib/analysis.ts` it turned out `analyzeStock(symbol, history: HistoricalBar[])` was **already pure** — no cache reads inside, takes a bar array as input. So the simulator just calls it with `history.slice(0, currentBarIdx + 1)` for each walk-forward day. Zero refactor required to live code. **All existing 100+ analysis tests pass unchanged** — the regression guard the plan was worried about is automatic.
+
+**Critical scope clarification — what this backtest measures.** `analyzeStock` returns an `Analysis` with **technical fields only** (RSI, SMA, MACD, Bollinger, score, signals, risk packet). The richer fields — catalysts, insiders, analysts, regime, options, diagnosis, earnings, FDA, sector rotation — get attached *outside* `analyzeStock` by separate sources that read live APIs. For a walk-forward backtest those would need **point-in-time reconstruction** of historical news / insider transactions / regime states / options-IV history. That's a multi-day project per signal, not a 2.5-day Phase 15b.
+
+So **Phase 15b measures technical-only signals** (RSI, Bollinger, MACD, momentum, the composite score derived from them, the risk-packet's stop/target). No catalyst boosts, no insider clusters, no regime adjustment, no options-IV influence. Those land as **Phase 15.x augments** once the engine is proven. The `/backtest` UI shows a prominent banner about this; the `signalsAtEntry` field on each trade captures exactly which technical signals fired so 15c per-signal attribution will work over the v1 backtest unchanged.
+
+This is also the **scientifically correct** order: isolate technical-scoring performance before mixing in fundamentals. A `0.5 Sharpe` result from v1 means "the technical subset on its own isn't enough", not "the whole strategy is broken".
+
+**Shipped:**
+
+### Prisma
+- **`BacktestRun`** model — `(id, paramsJson, resultJson, startedAt, completedAt)`. Append-only history. Both params and result are serialised JSON so the schema doesn't need to evolve as 15c/15d add metrics.
+
+### Config — `BACKTEST_CONFIG` in `src/lib/config.ts`
+- `warmupBars: 50` — minimum history before signals are checked (max of SMA50 + MACD slow + margin).
+- `defaultStartingCapital: 50_000`, `maxOpenPositions: 10`.
+- Spread tiers: `highVolumeDollarThreshold: $50M → lowSpreadPct: 5 bps`, `lowVolumeDollarThreshold: $5M → highSpreadPct: 50 bps`, linear between.
+- `avgVolumeLookbackBars: 20` — trailing window for the spread model.
+
+### Pure execution model — `src/lib/backtest-execution.ts`
+- **`computeSpread(avgDollarVolume)`** — linear interpolation between the two tiers, with a defensive worst-case branch for NaN / zero / negative volume.
+- **`computeAvgDollarVolume(bars, lookback?)`** — trailing close × volume average. Pure helper, also used by the simulator for per-day spread updates.
+- **`simulateMarketBuyFill({ bar, spreadPct })`** — fills at `bar.high × (1 + spreadPct/2)`. Worst-price-in-bar assumption + half-spread on the offer side.
+- **`simulateStopTargetExit({ bar, stopPrice, targetPrice, spreadPct })`** — checks in this order:
+  1. **Gap-down through stop** (open ≤ stop) → fill at open.
+  2. **Intraday stop hit** (low ≤ stop) → fill at stop.
+  3. **Target hit** (high ≥ target) → fill at target.
+  4. Otherwise → position stays open.
+
+  Half-spread applied downward (we're selling, hit the bid). **Stop beats target** when both could trigger in the same bar — the conservative-for-backtest-honesty assumption.
+
+### Walk-forward simulator — `src/lib/backtest.ts`
+- **`runBacktest(params, barsBySymbol, options?)`** — pure function over pre-loaded bars (DB read is the caller's job).
+- Per trading day in `[startDate, endDate]`:
+  1. Execute queued entries from yesterday on today's bar (fill price, position-sized via Phase 14's `computePositionSize`, capped at `maxOpenPositions`).
+  2. Check stop/target for all open positions against today's bar. Closed positions logged as `BacktestTrade` (entry / exit / shares / P&L / exit reason / signals-at-entry / score-at-entry).
+  3. Re-evaluate signals on today's bars for symbols without an open position. BUY / STRONG BUY queues an entry for tomorrow.
+  4. Record an `EquityPoint` for today (cash + sum(open position × close)).
+- At end-of-window, any still-open positions exit at the last close with `exitReason="end_of_window"`.
+- Optional `onProgress` callback fires once per trading day with `{day, totalDays, date, equity, openPositions, tradesClosed}`. Callback throws are swallowed (a buggy UI can't abort a 30-minute backtest).
+- Returns `BacktestResult = { params, trades[], equityCurve[], summary }`. Summary includes win/loss counts, total return, cash remaining, symbol counts.
+
+### Edge orchestration — `src/lib/backtest-source.ts`
+- **`loadBarsForSymbols(symbols)`** — bulk-loads `HistoricalBar` rows from Phase 15a's table, maps to the simulator's input shape.
+- **`runAndPersistBacktest(params, options)`** — loads bars (defaults to entire watchlist when `symbols` omitted), runs the simulator, persists a `BacktestRun` row. Returns `{ runId, result }`.
+- **`listBacktestRuns(limit?)`** — newest-first, with `totalReturnPct` / `tradesCount` / param fields lifted out of the JSON blobs for table display. Tolerates malformed stored JSON (logs warn, fills zero defaults rather than failing the listing).
+
+### API routes
+- **`POST /api/backtest/run`** — accepts `{ startDate, endDate, startingCapital?, symbols? }`. Returns NDJSON stream: `{kind:"start"}` → per-day `{kind:"progress",...}` → `{kind:"done", runId, result}`. Validates dates (`YYYY-MM-DD` format, end ≥ start). On simulator failure stays 200 + emits `{kind:"error",message}` inline so the UI can render rather than treating mid-stream errors as request death.
+- **`GET /api/backtest/runs`** — `{count, runs[]}` listing for the future history page.
+
+### UI — `/backtest` page
+- Page header with technical-only-signals disclaimer.
+- **Survivorship banner** (prominent amber card) explaining Yahoo's currently-listed-only data bias. Load-bearing enough that it ships in 15b rather than waiting for 15d polish.
+- Form: start date, end date, starting capital (all editable; defaults: last 1 year, $50k).
+- "Run backtest" button → fetches the streaming endpoint, parses NDJSON line-by-line.
+- **Live progress card** while running: progress bar, current day, ETA, running equity, open positions, trades closed.
+- **Summary card** on done: total return %, P&L $, trade counts (W/L), symbol counts.
+- **Trade-list table** (paginated 25/page): symbol, entry, exit, shares, P&L $, P&L %, exit reason, score at entry.
+- Empty-state note when zero trades fire.
+
+### Health + logging
+- New `backtest` component in `HEALTH_SPECS` — manual-trigger like `historical`, no cron, generous freshness window so it doesn't show "stale" between rare runs.
+- Log-persistence whitelist extended with `backtest:run.start` + `backtest:run.done`.
+
+**Out of scope here (deferred to 15c / 15d / 15.x):**
+- **Metrics**: Sharpe, Sortino, Calmar, max DD, time underwater, profit factor — 15c.
+- **Per-regime + per-signal attribution** — 15c (the `signalsAtEntry` + `scoreAtEntry` fields on each trade are captured now so 15c can compute attribution without re-running anything).
+- **Equity curve + drawdown charts** — 15d.
+- **Catalyst / regime / insider / options-IV historical augmentation** — Phase 15.x. The biggest missing piece; what 15b measures is a *subset* of the live strategy.
+- **Multi-strategy abstraction** — 15.x once there's a second strategy to compare.
+- **Halt detection in execution** — Yahoo doesn't tag halts cleanly; needs paid intraday data.
+
+**Tests & coverage:**
+- **16 backtest-execution tests** — spread tiers + linear interpolation + defensive NaN/zero, avg-dollar-volume math, market-buy fill formula, all four exit branches (gap-down, intraday-stop, target, position-stays-open), stop-beats-target same-bar, spread applied to both entry and exit.
+- **8 backtest simulator tests** — zero-trades baseline, **lookahead invariant** (verifies `analyzeStock` slice length is always ≤ current day index across every call), end-to-end synthetic 100-bar series with forced signal at day 60 + assert exact trade entered on bar 61 with correct entry price + profitable P&L, `maxOpenPositions` cap enforced across 20 simultaneous BUY signals, `onProgress` events monotone + correct count, callback-throw swallowed, empty-date-range returns empty result, end-of-window closes still-open positions.
+- **8 backtest-source tests** — bar-loading shape, empty-bars symbol included, defaults to watchlist when symbols omitted, uses provided symbols when given, persists + returns id + result, forwards onProgress, runs list with summary fields lifted from JSON, malformed JSON tolerated with logged warn.
+- **10 backtest API tests** — happy stream parse, 400 on missing/malformed start/end dates, 400 on end-before-start, 400 on wrong format, default capital when omitted, unparseable body → 400 (dates required), mid-stream error event, GET runs happy + 500 path.
+- **7 /backtest page tests** — form renders with survivorship banner, click-Run streams progress and renders summary + trade table, stream-error toast, stream-ends-without-done toast, API 400 surfaces as toast, no-trades empty-state note, pagination when trades > 25.
+- **976 total tests pass** (was 927). Coverage **98.30 / 92.39 / 97.53 / 98.30** — all thresholds clear; the small function-coverage dip (98.52 → 97.53) is from the new modules' few defensive branches.
+
+**Browser-verified:** `/backtest` page renders cleanly — H1, prominent survivorship banner, date inputs + capital input, Run button. No console errors, no React error overlay. Screenshot captured.
+
+### Effort: **~2 days** (vs 2.5 estimated — the planned core refactor turned out unnecessary because `analyzeStock` was already pure; the execution model + simulator + API + UI took the full 2 days as expected).

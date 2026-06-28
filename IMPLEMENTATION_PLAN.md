@@ -88,6 +88,8 @@ Phases 0 through 13 have shipped (plus the 9.5 / 11.x sub-phases for ESLint, vit
 - Phase 12 — FDA / drug-trial catalyst
 - Phase 13 — Box 3 helper *(rescoped from US-tax-aware)*
 - Phase 14 — Trade card UI
+- Phase 15a — Backtest: historical data + viewer
+- Phase 15b — Backtest: walk-forward simulator + minimal UI
 
 Each carries a "Deferred" sub-section — those deferrals are either folded into the relevant upcoming phase below or live in the "Unscheduled — open backlog" section at the bottom of this file.
 
@@ -127,58 +129,6 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 Splitting: each sub-phase is shippable in 1–3 days as a coherent PR (vs a 10-day mega-PR). If the strategy turns out to be unworkable — a real possibility, that's *why* we backtest — we can stop after 15a–15b and skip the polish work. Failures isolate: a bug in walk-forward simulation can't be confused with a bug in metrics calculation if they shipped separately.
 
 UI from day one: you see historical-data quality (15a) before the backtest depends on it; you see walk-forward intermediate state (15b) while it runs, not after it finishes; metrics and charts (15c–d) become incremental enhancements on a UI you've already used.
-
----
-
-### Phase 15a — Historical data ingestion + viewer
-
-**Goal:** populate `HistoricalBar` with daily OHLCV for every watchlist symbol over a 5-year window, with a UI to verify data quality.
-
-**Ships:**
-- **Prisma model `HistoricalBar`** — `(id, symbol, date, open, high, low, close, volume, adjClose?)` with `@@unique([symbol, date])` and `@@index([symbol, date])`.
-- **`src/lib/historical-bars-source.ts`** (edge) — `backfillSymbol(symbol, years)` pulls from Yahoo (existing `yahoo-finance2`), batches upserts in chunks of 200, throttled per existing rate-limit plumbing.
-- **`POST /api/historical/backfill`** — triggers backfill for the entire watchlist. Returns progress JSON. Manual trigger only (historical data doesn't change retroactively; live `BarsCache` covers recent days).
-- **UI: `/historical` page** — table of (symbol, bars-stored, first-date, last-date, gap-count). Click → per-symbol sparkline of close prices for visual sanity-check (splits not applied, weird gaps, etc).
-- **Health: `historical` component** in `HEALTH_SPECS` with `backfill.start` / `backfill.done` events.
-
-**Tests:** backfill happy path (mocked yahoo, upsert calls), idempotency, gap detection, API route happy + degraded states, UI list + sparkline rendering.
-
-**Out of scope here:** backfill cron (manual only), splits/dividends correction (Yahoo's `adjClose` captured; full handling defers).
-
-**Effort: ~1.5 days.**
-
----
-
-### Phase 15b — Walk-forward simulator + minimal backtest UI
-
-**Goal:** for each historical day, build `Analysis` using *only* bars ≤ that day, check signals, simulate trades with realistic execution. Output JSON. UI shows progress + final trade list.
-
-**Core refactor:** extract `analyzeBars(bars: BarSeries): Analysis` (pure) from `analyzeStock` (cache reader). `analyzeStock` becomes a 5-line wrapper. Single source of truth so backtest behaviour can't drift from live. Verified by existing 100+ analysis tests still passing.
-
-**Ships:**
-- **Refactor `src/lib/analysis.ts`** — extract `analyzeBars`. Zero behaviour change to live system.
-- **`src/lib/backtest.ts`** — `runBacktest({ symbols, startDate, endDate, startingCapital })`. Walk-forward per trading day: build per-symbol `Analysis` from bars[0..D] (no lookahead), check signal, simulate entry on D+1, check stop/target each day, log every trade as `BacktestTrade`.
-- **Realistic execution model** (non-negotiable):
-  - **Spread**: 0.05% for symbols with avg dollar-volume > $50M/day; scales linearly to 0.5% for symbols < $5M/day. Applied to entry and exit.
-  - **Stop-fill**: stops fill at `min(stopPrice, nextBarOpen)` for longs. Gap-through-stop fills at gap-open price.
-  - **Slippage on market entries**: worst price within the next bar's range.
-  - **Halt handling**: not in v1 (Yahoo doesn't tag halts cleanly). Documented limitation; deferred to backlog.
-- **`POST /api/backtest/run`** — accepts `{ startDate, endDate, symbols? }`, runs synchronously, returns `BacktestResult` JSON.
-- **`GET /api/backtest/runs`** — list of stored past runs from new `BacktestRun` Prisma model `(id, params JSON, result JSON, createdAt)`. Re-view results without re-running.
-- **UI: `/backtest` page (minimal)** — date-range picker, "Run backtest" button. While running: progress bar + "now simulating day N of M". When done: summary card + paginated trade-list table. **No charts yet** — those land in 15d.
-- **Health: `backtest` component** added.
-
-**Tests:**
-- **Lookahead test** — verify no field in `analyzeBars` reads `bars[i]` where `i >= currentIndex`. The single most important test.
-- **Spread test** — high-volume → 0.05%, low-volume → 0.5%, linear scaling between.
-- **Stop-fill test** — synthetic bar where low pierces stop but open is above stop → fills at stop; gap-through case → fills at open.
-- **End-to-end synthetic backtest** — 10 hand-crafted bars, single symbol, known signals → assert exact P&L.
-- **Refactor regression** — all existing `analysis.ts` tests pass after extraction.
-- API + UI tests.
-
-**Out of scope here:** metrics (Sharpe, drawdown — 15c), charts (15d), strategy abstraction (v1 backtests current scoring; abstraction when there's a second strategy to compare).
-
-**Effort: ~2.5 days.**
 
 ---
 
@@ -227,16 +177,14 @@ UI from day one: you see historical-data quality (15a) before the backtest depen
 - **Survivorship bias**: Yahoo serves only currently-listed tickers. Documented in report + UI. Real fix lives in backlog.
 - **Don't overfit**: rule of thumb — degrees of freedom (parameters tuned) ≪ number of independent trades. With 5 years × ~100 trades = 500 trades, can safely tune ~10 parameters; not 50. This applies *especially* once weight re-tuning lands as the next backlog item.
 
-### Effort
+### Effort (remaining)
 
 | Sub-phase | Effort | Cumulative |
 |---|---|---|
-| 15a — Historical data + viewer | 1.5 d | 1.5 d |
-| 15b — Walk-forward + minimal UI | 2.5 d | 4 d |
-| 15c — Metrics + attribution | 1.5 d | 5.5 d |
-| 15d — Charts + polish | 1.5 d | 7 d |
+| 15c — Metrics + attribution | 1.5 d | 1.5 d |
+| 15d — Charts + polish | 1.5 d | 3 d |
 
-**Total: ~7 days** — low end of the original 7–10 estimate.
+**~3 days remaining.** 15a + 15b shipped (see [`DONE.md`](./DONE.md)).
 
 ---
 
@@ -483,25 +431,23 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 ## Total timeline
 
-**Done so far:** ~47 days of build time across Phases 0–14. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
+**Done so far:** ~51 days of build time across Phases 0–14 + 15a + 15b. Per-phase effort breakdowns live in [`DONE.md`](./DONE.md).
 
 ### 🚧 Remaining (priority order)
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 15a | Backtest — historical data + viewer | 1.5 d | 1.5 d |
-| 15b | Backtest — walk-forward + minimal UI | 2.5 d | 4 d |
-| 15c | Backtest — metrics + attribution | 1.5 d | 5.5 d |
-| 15d | Backtest — charts + polish *(GATE clears here)* | 1.5 d | 7 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 11 d |
-| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 11.5 d |
-| 17 | Postgres migration | 1.5 d | 13 d |
-| 18 | Decay monitoring | 3 d | 16 d |
-| 19 | Alternative data | 5 d | 21 d |
-| 20 | Portfolio optimization | 5 d | 26 d |
-| 21 | Cost-bearing AI *(gated on 15d)* | 3–15 d | up to 41 d |
+| 15c | Backtest — metrics + attribution | 1.5 d | 1.5 d |
+| 15d | Backtest — charts + polish *(GATE clears here)* | 1.5 d | 3 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 7 d |
+| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 7.5 d |
+| 17 | Postgres migration | 1.5 d | 9 d |
+| 18 | Decay monitoring | 3 d | 12 d |
+| 19 | Alternative data | 5 d | 17 d |
+| 20 | Portfolio optimization | 5 d | 22 d |
+| 21 | Cost-bearing AI *(gated on 15d)* | 3–15 d | up to 37 d |
 
-**~7 days to reach Phase 16** (paper trading), then **~5 weeks** of remaining build before the 12-month soak begins. Phase 15 (now split 15a–d) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
+**~3 days to reach Phase 16** (paper trading), then **~4–5 weeks** of remaining build before the 12-month soak begins. Phase 15 (split 15a–d; 15a + 15b done) is the gate that unlocks weight re-tuning, Phase 16, and Phase 21 (LLM enhancements).
 
 ### What's "left behind" at the bottom — and why that's intentional now
 

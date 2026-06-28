@@ -210,6 +210,15 @@ export const HEALTH_SPECS: ReadonlyArray<ComponentSpec> = [
     expectedFreshnessSec: 365 * 24 * 60 * 60,
   },
   {
+    component: "backtest",
+    label: "Backtest engine",
+    description:
+      "Phase 15b walk-forward simulator. Manual trigger from /backtest. 'starting' is the expected resting state between runs.",
+    successEvents: ["run.done"],
+    startEvents: ["run.start"],
+    expectedFreshnessSec: 365 * 24 * 60 * 60,
+  },
+  {
     component: "discovery",
     label: "Trending discovery",
     description: "Yahoo trending tickers added to the watchlist every 30 min.",
