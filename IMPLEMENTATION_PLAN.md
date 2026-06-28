@@ -109,35 +109,134 @@ Each carries a "Deferred" sub-section — those deferrals are either folded into
 
 ## Phase 15 — Backtest engine *(was "Phase 11" — make-or-break, THE GATE)*
 
-**This is the gate.** Without realistic execution modeling, the backtest will overstate Sharpe by ~1.5× and you'll size live positions too aggressively. Phase 11 (audit log) must land first so there's a historical record to replay against.
+**This is the gate.** Without realistic execution modeling, the backtest will overstate Sharpe by ~1.5× and Phase 16 (paper trading) is unjustified. Weight-tuning before this lands is guesswork.
 
-### Tasks
-1. New module `src/lib/backtest.ts`:
-   - `runBacktest({ symbols, startDate, endDate, strategy }): BacktestResult`
-   - Walk-forward simulation — for each historical day, run `analyzeStock` using only data available *at that point* (no lookahead).
-2. **Realistic execution model** (the part most retail backtests skip):
-   - **Bid-ask spread**: model as 0.05% for liquid large caps, scale up to 1–2% for small caps based on avg dollar volume.
-   - **Market impact**: order size > 1% of avg daily volume → assume slippage proportional to participation.
-   - **Stop-fill realism**: stops fill at the *worse* of trigger price and next bar's open. Gaps through the stop fill at the gap price.
-   - **Gap risk**: model overnight gaps explicitly — if next day opens beyond stop, fill at open, not stop.
-   - **Slippage on entries**: market orders get worst price of next bar; limit orders may not fill.
-   - **Halt handling**: if halted, no fills until resume.
-3. **Metrics**: total return, CAGR, win rate, avg win/loss, profit factor, **Sharpe**, **Sortino**, **max drawdown**, **time underwater**, **per-signal-type attribution**.
-4. **Regime-stratified results**: report metrics separately per regime (Phase 6) — strategy may be great in trending markets and a disaster in ranging.
-5. CLI: `npm run backtest -- --years 5 --symbol-set sp500`.
-6. UI: `/backtest` tab — equity curve, drawdown chart, signal-attribution table.
-7. **Use backtest results to re-tune `analysis.ts` weights** — replace intuition with evidence. Re-run after every major addition.
+### Scope decisions (locked)
 
-### Caveats
-- **Survivorship bias**: Yahoo only serves currently-listed tickers. Document this; consider paid Norgate Data (~$30/mo) once everything else works.
-- **Don't overfit**: rule of thumb — degrees of freedom (parameters tuned) ≪ number of independent trades. With 5 years × ~100 trades = 500 trades, can safely tune ~10 parameters; not 50.
+| Decision | Choice |
+|---|---|
+| **PR shape** | Split into **four sub-phases (15a → 15d), each its own PR**. Every sub-phase ships UI you can see and use — no CLI-only checkpoints. |
+| **Bar storage** | New `HistoricalBar` Prisma table, indexed `(symbol, date)`. ~125k rows at watchlist × 5y. SQLite handles it; migrates cleanly to Postgres in Phase 17. |
+| **Universe** | Current watchlist only (~50–100 names). Same universe as live scanner = backtest measures *our actual strategy on our actual stocks*. |
+| **Survivorship** | Document bias in report + UI, ship anyway. Paid corrected data (Norgate ~$30/mo) lives in Unscheduled backlog. |
+| **Report format** | Each run produces JSON (for UI + audit) and a markdown summary (for terminal viewing + GitHub PR comments). |
+| **Weight re-tuning** | **NOT in Phase 15.** Lives in the Unscheduled backlog as "Backtest weight re-tuning (grid search)". Building optimisation in parallel with the engine mixes "does the backtest work" with "is the strategy optimal" — diagnosis becomes painful. |
 
-### Tests
-- Synthetic price data with known outcomes — verify backtest math.
-- Lookahead-bias tests — verify we never use day N's close in day N's signal.
-- Slippage scenarios — verify gap-through-stop fills correctly.
+### Why split? Why UI from day one?
 
-### Effort: **7–10 days**. Highest value, highest care.
+Splitting: each sub-phase is shippable in 1–3 days as a coherent PR (vs a 10-day mega-PR). If the strategy turns out to be unworkable — a real possibility, that's *why* we backtest — we can stop after 15a–15b and skip the polish work. Failures isolate: a bug in walk-forward simulation can't be confused with a bug in metrics calculation if they shipped separately.
+
+UI from day one: you see historical-data quality (15a) before the backtest depends on it; you see walk-forward intermediate state (15b) while it runs, not after it finishes; metrics and charts (15c–d) become incremental enhancements on a UI you've already used.
+
+---
+
+### Phase 15a — Historical data ingestion + viewer
+
+**Goal:** populate `HistoricalBar` with daily OHLCV for every watchlist symbol over a 5-year window, with a UI to verify data quality.
+
+**Ships:**
+- **Prisma model `HistoricalBar`** — `(id, symbol, date, open, high, low, close, volume, adjClose?)` with `@@unique([symbol, date])` and `@@index([symbol, date])`.
+- **`src/lib/historical-bars-source.ts`** (edge) — `backfillSymbol(symbol, years)` pulls from Yahoo (existing `yahoo-finance2`), batches upserts in chunks of 200, throttled per existing rate-limit plumbing.
+- **`POST /api/historical/backfill`** — triggers backfill for the entire watchlist. Returns progress JSON. Manual trigger only (historical data doesn't change retroactively; live `BarsCache` covers recent days).
+- **UI: `/historical` page** — table of (symbol, bars-stored, first-date, last-date, gap-count). Click → per-symbol sparkline of close prices for visual sanity-check (splits not applied, weird gaps, etc).
+- **Health: `historical` component** in `HEALTH_SPECS` with `backfill.start` / `backfill.done` events.
+
+**Tests:** backfill happy path (mocked yahoo, upsert calls), idempotency, gap detection, API route happy + degraded states, UI list + sparkline rendering.
+
+**Out of scope here:** backfill cron (manual only), splits/dividends correction (Yahoo's `adjClose` captured; full handling defers).
+
+**Effort: ~1.5 days.**
+
+---
+
+### Phase 15b — Walk-forward simulator + minimal backtest UI
+
+**Goal:** for each historical day, build `Analysis` using *only* bars ≤ that day, check signals, simulate trades with realistic execution. Output JSON. UI shows progress + final trade list.
+
+**Core refactor:** extract `analyzeBars(bars: BarSeries): Analysis` (pure) from `analyzeStock` (cache reader). `analyzeStock` becomes a 5-line wrapper. Single source of truth so backtest behaviour can't drift from live. Verified by existing 100+ analysis tests still passing.
+
+**Ships:**
+- **Refactor `src/lib/analysis.ts`** — extract `analyzeBars`. Zero behaviour change to live system.
+- **`src/lib/backtest.ts`** — `runBacktest({ symbols, startDate, endDate, startingCapital })`. Walk-forward per trading day: build per-symbol `Analysis` from bars[0..D] (no lookahead), check signal, simulate entry on D+1, check stop/target each day, log every trade as `BacktestTrade`.
+- **Realistic execution model** (non-negotiable):
+  - **Spread**: 0.05% for symbols with avg dollar-volume > $50M/day; scales linearly to 0.5% for symbols < $5M/day. Applied to entry and exit.
+  - **Stop-fill**: stops fill at `min(stopPrice, nextBarOpen)` for longs. Gap-through-stop fills at gap-open price.
+  - **Slippage on market entries**: worst price within the next bar's range.
+  - **Halt handling**: not in v1 (Yahoo doesn't tag halts cleanly). Documented limitation; deferred to backlog.
+- **`POST /api/backtest/run`** — accepts `{ startDate, endDate, symbols? }`, runs synchronously, returns `BacktestResult` JSON.
+- **`GET /api/backtest/runs`** — list of stored past runs from new `BacktestRun` Prisma model `(id, params JSON, result JSON, createdAt)`. Re-view results without re-running.
+- **UI: `/backtest` page (minimal)** — date-range picker, "Run backtest" button. While running: progress bar + "now simulating day N of M". When done: summary card + paginated trade-list table. **No charts yet** — those land in 15d.
+- **Health: `backtest` component** added.
+
+**Tests:**
+- **Lookahead test** — verify no field in `analyzeBars` reads `bars[i]` where `i >= currentIndex`. The single most important test.
+- **Spread test** — high-volume → 0.05%, low-volume → 0.5%, linear scaling between.
+- **Stop-fill test** — synthetic bar where low pierces stop but open is above stop → fills at stop; gap-through case → fills at open.
+- **End-to-end synthetic backtest** — 10 hand-crafted bars, single symbol, known signals → assert exact P&L.
+- **Refactor regression** — all existing `analysis.ts` tests pass after extraction.
+- API + UI tests.
+
+**Out of scope here:** metrics (Sharpe, drawdown — 15c), charts (15d), strategy abstraction (v1 backtests current scoring; abstraction when there's a second strategy to compare).
+
+**Effort: ~2.5 days.**
+
+---
+
+### Phase 15c — Metrics + per-regime + per-signal attribution
+
+**Goal:** turn raw `BacktestTrade[]` into the professional metrics that tell you whether the strategy is worth running.
+
+**Ships:**
+- **`src/lib/backtest-metrics.ts`** (pure):
+  - `computeMetrics(trades, equityCurve)` → returns:
+    - **Returns**: total return %, CAGR, avg win/loss.
+    - **Risk-adjusted**: Sharpe (annualised), Sortino (downside-only), Calmar.
+    - **Drawdown**: max DD %, longest DD duration, time underwater fraction.
+    - **Trade quality**: win rate, profit factor, expectancy per trade.
+  - `computePerRegimeMetrics(trades)` — same metrics grouped by Phase 6 regime active at entry. Catches "strategy great in trending_up, disaster in trending_down".
+  - `computePerSignalAttribution(trades)` — per signal type (RSI oversold, MACD cross, insider cluster, etc.), aggregate P&L of trades where that signal was active. Catches "score is positive overall because catalyst weight is doing all the work; RSI signals are net-negative".
+- **`runBacktest` pipeline updated** to embed metrics + per-regime + per-signal in the `BacktestResult`.
+- **Markdown report generator** — `formatReport(result): string` saves to `/data/backtest-reports/<runId>.md`. Useful for sharing in PR descriptions.
+- **UI: `/backtest` page extended** — three new tabs after the trade list: "Metrics", "By Regime", "By Signal". Tight metrics tables; sortable.
+
+**Tests:** each metric vs hand-computed reference, per-regime grouping correctness, per-signal attribution sums, markdown snapshot, UI tab switching + sorting.
+
+**Effort: ~1.5 days.**
+
+---
+
+### Phase 15d — Equity curve + drawdown charts + visual polish
+
+**Goal:** make `/backtest` a tab you actually want to look at. Charts + storytelling.
+
+**Ships:**
+- **`<EquityCurve>` chart** — SVG line chart of portfolio value over time, with SPY total-return benchmark overlay. Drawn from scratch (no chart library) to keep bundle small — Phase 14 already proved we can do CSS-driven dataviz cleanly. ~150 lines.
+- **`<DrawdownChart>`** — area chart below equity curve, % below all-time-high at each point. Aligned x-axis.
+- **`<TradeListTable>` enhancements** — sortable columns, filter chips by signal type and regime, click-trade-to-expand showing entry/exit detail and a holding-period sparkline.
+- **Survivorship warning banner** — prominent banner on `/backtest` explaining the bias and what it means for the numbers.
+- **`/backtest/runs` page** — every stored `BacktestRun` with date / params / total-return / Sharpe. Clickable to re-open. Lets you compare strategy revisions over time.
+
+**Tests:** chart components render expected points/lines, survivorship banner always present, runs list renders + click navigates.
+
+**Effort: ~1.5 days.**
+
+---
+
+### Caveats (apply to the whole phase)
+
+- **Survivorship bias**: Yahoo serves only currently-listed tickers. Documented in report + UI. Real fix lives in backlog.
+- **Don't overfit**: rule of thumb — degrees of freedom (parameters tuned) ≪ number of independent trades. With 5 years × ~100 trades = 500 trades, can safely tune ~10 parameters; not 50. This applies *especially* once weight re-tuning lands as the next backlog item.
+
+### Effort
+
+| Sub-phase | Effort | Cumulative |
+|---|---|---|
+| 15a — Historical data + viewer | 1.5 d | 1.5 d |
+| 15b — Walk-forward + minimal UI | 2.5 d | 4 d |
+| 15c — Metrics + attribution | 1.5 d | 5.5 d |
+| 15d — Charts + polish | 1.5 d | 7 d |
+
+**Total: ~7 days** — low end of the original 7–10 estimate.
 
 ---
 
@@ -355,6 +454,14 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 - `/box3` history page surfacing the `Box3Snapshot` rows (API exists; no UI yet).
 - Secondary FX source behind `getLatestUsdEurRate` (ECB direct / exchangerate.host) for Frankfurter outages.
 
+### Backtest engine (Phase 15 follow-ups)
+- **Backtest weight re-tuning (grid search)** — once Phase 15d ships and we know the baseline strategy's metrics, grid-search over `SCORING_WEIGHTS` to find the parameter set that maximises Sharpe on held-out data. Strict overfitting discipline (≤10 free parameters per 500 trades). ~3 days. Held out of Phase 15 deliberately so we can distinguish "backtest engine bugs" from "strategy is suboptimal".
+- **Survivorship-corrected historical data** — evaluate Norgate Data (~$30/mo) or similar paid sources. Build out only if v1 backtest results justify the spend.
+- **Multi-strategy abstraction** — abstract `runBacktest` over a `Strategy` interface once there's a second strategy to compare. Premature now.
+- **S&P 500 universe support for backtest** — `--symbol-set sp500` for sanity-checking generalisation beyond our watchlist.
+- **Halt detection in backtest execution model** — Yahoo doesn't tag halts cleanly; needs a paid intraday data source. Documented limitation of v1.
+- **Splits / dividends corporate-action handling** — Phase 15a captures `adjClose` but doesn't apply it during simulation; v1 trades raw close prices. Inaccurate for stocks with splits in the window.
+
 ### Infrastructure (further out)
 - Sentry / Datadog for production error tracking + per-API latency.
 - Proper secret management (Doppler / 1Password Connect) before any prod deploy.
@@ -382,16 +489,19 @@ Per the "default to skepticism" principle in the Guiding Principles section:
 
 | # | Phase | Effort | Cumulative remaining |
 |---|---|---|---|
-| 15 | Backtest engine *(THE GATE)* | 10 d | 10 d |
-| 16 | Paper trading | 4 d (+ 12 mo soak) | 14 d |
-| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 14.5 d |
-| 17 | Postgres migration | 1.5 d | 16 d |
-| 18 | Decay monitoring | 3 d | 19 d |
-| 19 | Alternative data | 5 d | 24 d |
-| 20 | Portfolio optimization | 5 d | 29 d |
-| 21 | Cost-bearing AI *(gated on Phase 15)* | 3–15 d | up to 44 d |
+| 15a | Backtest — historical data + viewer | 1.5 d | 1.5 d |
+| 15b | Backtest — walk-forward + minimal UI | 2.5 d | 4 d |
+| 15c | Backtest — metrics + attribution | 1.5 d | 5.5 d |
+| 15d | Backtest — charts + polish *(GATE clears here)* | 1.5 d | 7 d |
+| 16 | Paper trading | 4 d (+ 12 mo soak) | 11 d |
+| 16.1 | Paper-trade carve-out for audit-log prune | 0.5 d | 11.5 d |
+| 17 | Postgres migration | 1.5 d | 13 d |
+| 18 | Decay monitoring | 3 d | 16 d |
+| 19 | Alternative data | 5 d | 21 d |
+| 20 | Portfolio optimization | 5 d | 26 d |
+| 21 | Cost-bearing AI *(gated on 15d)* | 3–15 d | up to 41 d |
 
-**~8 more weeks of focused build time** to reach Phase 16 (paper trading), then the 12-month soak before any real-money decision. Phase 15 (backtest) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
+**~7 days to reach Phase 16** (paper trading), then **~5 weeks** of remaining build before the 12-month soak begins. Phase 15 (now split 15a–d) is the gate that unlocks weight re-tuning, Phase 16 (paper trading), and Phase 21 (LLM enhancements).
 
 ### What's "left behind" at the bottom — and why that's intentional now
 

@@ -59,8 +59,9 @@ export interface ComponentHealth {
   lastSuccessAgeSec: number | null;
   /** Threshold (sec): success older than this → "stale". */
   expectedFreshnessSec: number;
-  /** Cron cadence (ms). Sourced from the relevant *_CONFIG block. */
-  refreshIntervalMs: number;
+  /** Cron cadence (ms). Sourced from the relevant *_CONFIG block.
+   *  Undefined for manual-trigger components (no cron). */
+  refreshIntervalMs?: number;
   /** Errors in the last 24h. */
   recentErrors: number;
   /** Warnings in the last 24h. */
@@ -79,8 +80,9 @@ interface ComponentSpec {
   startEvents?: string[];
   expectedFreshnessSec: number;
   /** Cron cadence in ms. Read directly from the source config block — if
-   *  the config changes, this changes with it. */
-  refreshIntervalMs: number;
+   *  the config changes, this changes with it. Omit for manual-trigger
+   *  components (e.g. Phase 15a historical backfill). */
+  refreshIntervalMs?: number;
 }
 
 // One source of truth for "what does healthy look like for X?". Adding a new
@@ -194,6 +196,18 @@ export const HEALTH_SPECS: ReadonlyArray<ComponentSpec> = [
     startEvents: ["refresh.start"],
     expectedFreshnessSec: 30 * 60 * 60,
     refreshIntervalMs: BOX3_CONFIG.fxRefreshIntervalMs,
+  },
+  {
+    component: "historical",
+    label: "Historical bars",
+    description:
+      "Phase 15a daily OHLCV backfill for the watchlist. Manual trigger only — there is no cron. 'starting' is the expected resting state between rare backfill runs.",
+    successEvents: ["backfill.done"],
+    startEvents: ["backfill.start"],
+    // No automatic refresh — once back-filled, the data doesn't change.
+    // Set a very generous freshness window so we don't show 'stale' just
+    // because nobody ran backfill recently.
+    expectedFreshnessSec: 365 * 24 * 60 * 60,
   },
   {
     component: "discovery",
@@ -340,7 +354,8 @@ export function formatAge(seconds: number | null): string {
  * Human-readable cron cadence ("every 5 min", "every 24h", "every 7 days").
  * Used by the /logs UI; pure so it can be unit-tested without DOM.
  */
-export function formatInterval(ms: number): string {
+export function formatInterval(ms: number | undefined): string {
+  if (ms === undefined) return "manual trigger";
   if (ms < 1000) return `${ms}ms`;
   const sec = Math.round(ms / 1000);
   if (sec < 60) return `${sec}s`;

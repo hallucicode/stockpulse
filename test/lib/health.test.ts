@@ -208,10 +208,20 @@ describe("computeAllHealth", () => {
 });
 
 describe("HEALTH_SPECS source-of-truth", () => {
-  it("each spec exposes a positive refreshIntervalMs sourced from config", () => {
+  it("each spec exposes a positive refreshIntervalMs sourced from config (or undefined for manual-trigger components)", () => {
     for (const spec of HEALTH_SPECS) {
+      // Manual-trigger components (e.g. Phase 15a historical backfill)
+      // are allowed to omit refreshIntervalMs entirely. Everything else
+      // must have a positive cadence sourced from its *_CONFIG block.
+      if (spec.refreshIntervalMs === undefined) continue;
       expect(spec.refreshIntervalMs).toBeGreaterThan(0);
     }
+  });
+
+  it("includes the historical manual-trigger spec (no refreshIntervalMs)", () => {
+    const historical = HEALTH_SPECS.find((s) => s.component === "historical");
+    expect(historical).toBeDefined();
+    expect(historical!.refreshIntervalMs).toBeUndefined();
   });
 
   it("computeComponentHealth surfaces refreshIntervalMs on the output", () => {
@@ -222,6 +232,10 @@ describe("HEALTH_SPECS source-of-truth", () => {
 });
 
 describe("formatInterval", () => {
+  it("returns 'manual trigger' for undefined (Phase 15a historical etc.)", () => {
+    expect(formatInterval(undefined)).toBe("manual trigger");
+  });
+
   it("formats sub-second values as ms", () => {
     expect(formatInterval(500)).toBe("500ms");
   });
