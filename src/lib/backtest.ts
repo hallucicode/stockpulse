@@ -39,6 +39,26 @@ import { BACKTEST_CONFIG } from "./config";
 import { computePositionSize } from "./position-sizing";
 import { log } from "./logger";
 
+/**
+ * Filter knobs to constrain which signals turn into trades. All optional;
+ * omitted = no filter at that dimension. These exist because a backtest
+ * that mechanically fires every BUY signal across the entire watchlist
+ * tests an indiscriminate baseline that no real trader would execute —
+ * the live user curates with all four of these (plus catalysts, which
+ * we can't reconstruct yet).
+ */
+export interface BacktestFilters {
+  /** Only enter when compositeScore ≥ this (default = BUY threshold ≈ 15). */
+  minScore?: number;
+  /**
+   * Only consider symbols whose trailing avg dollar volume ≥ this. Filters
+   * out illiquid names where modelled spread + slippage destroy any edge.
+   */
+  minAvgDollarVolume?: number;
+  /** Only enter when the risk packet's R:R ≥ this. Skips marginal setups. */
+  minRiskReward?: number;
+}
+
 export interface BacktestParams {
   symbols: string[];
   /** Inclusive ISO date (YYYY-MM-DD) — bars on or after this date trade. */
@@ -46,6 +66,7 @@ export interface BacktestParams {
   /** Inclusive ISO date — bars up to and including this date trade. */
   endDate: string;
   startingCapital: number;
+  filters?: BacktestFilters;
 }
 
 export interface BacktestTrade {
@@ -186,13 +207,32 @@ export async function runBacktest(
   barsBySymbol: Record<string, HistoricalBar[]>,
   options: RunBacktestOptions = {}
 ): Promise<BacktestResult> {
-  const { symbols, startDate, endDate, startingCapital } = params;
+  const { symbols, startDate, endDate, startingCapital, filters = {} } = params;
   const dateIndex = buildDateIndex(barsBySymbol);
   const tradingDates = collectTradingDates(barsBySymbol, startDate, endDate);
 
   const symbolsWithEnoughHistory = symbols.filter(
     (s) => (barsBySymbol[s]?.length ?? 0) >= BACKTEST_CONFIG.warmupBars
   ).length;
+
+  // Optional per-symbol ADV filter — computed once across the full
+  // history per symbol. A symbol whose lifetime avg dollar volume falls
+  // under the floor is excluded from signal-checks entirely.
+  const symbolPassesAdv = new Map<string, boolean>();
+  if (filters.minAvgDollarVolume !== undefined) {
+    for (const symbol of symbols) {
+      const bars = barsBySymbol[symbol] ?? [];
+      const adv = computeAvgDollarVolume(
+        bars.map(toBacktestBar),
+        Math.max(bars.length, BACKTEST_CONFIG.avgVolumeLookbackBars)
+      );
+      symbolPassesAdv.set(symbol, adv >= filters.minAvgDollarVolume);
+    }
+  }
+  const checkAdv = (symbol: string): boolean => {
+    if (filters.minAvgDollarVolume === undefined) return true;
+    return symbolPassesAdv.get(symbol) ?? false;
+  };
 
   let cash = startingCapital;
   const openPositions = new Map<string, OpenPosition>();
@@ -304,10 +344,12 @@ export async function runBacktest(
     }
 
     // ── 3. Generate new entry signals for D+1 from TODAY's data.
-    //     We only queue entries when there's a slot to fill (cash + cap).
+    //     We only queue entries when there's a slot to fill (cash + cap)
+    //     AND the optional filter knobs all pass.
     for (const symbol of symbols) {
       if (openPositions.has(symbol)) continue;
       if (openPositions.size + pendingEntries.length >= BACKTEST_CONFIG.maxOpenPositions) break;
+      if (!checkAdv(symbol)) continue; // illiquidity filter
       const barIdx = dateIndex.get(symbol)?.get(currentDate);
       if (barIdx === undefined) continue;
       if (barIdx + 1 < BACKTEST_CONFIG.warmupBars) continue; // need warmup history
@@ -319,6 +361,18 @@ export async function runBacktest(
         !analysis.risk ||
         analysis.risk.stop <= 0 ||
         analysis.risk.target <= analysis.risk.entry
+      ) {
+        continue;
+      }
+      if (
+        filters.minScore !== undefined &&
+        analysis.compositeScore < filters.minScore
+      ) {
+        continue;
+      }
+      if (
+        filters.minRiskReward !== undefined &&
+        analysis.risk.riskReward < filters.minRiskReward
       ) {
         continue;
       }

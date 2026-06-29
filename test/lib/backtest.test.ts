@@ -417,4 +417,138 @@ describe("runBacktest", () => {
     expect(result.trades.length).toBe(1);
     expect(result.trades[0].exitReason).toBe("end_of_window");
   });
+
+  describe("filters (Phase 15b.1)", () => {
+    // Returns a STRONG BUY mock-analysis with the given score + R:R.
+    const buyMock = (score: number, riskReward: number) =>
+      vi
+        .spyOn(analysisModule, "analyzeStock")
+        .mockImplementation((symbol, history) => ({
+          symbol,
+          price: history[history.length - 1].close,
+          rsi: 25,
+          sma20: 100,
+          sma50: 100,
+          bollingerUpper: 110,
+          bollingerLower: 90,
+          bollingerMid: 100,
+          macdLine: 1,
+          macdSignal: 0,
+          macdHistogram: 1,
+          dayChange: -2,
+          weekChange: -5,
+          monthChange: -10,
+          avgDailyVolatility: 1,
+          compositeScore: score,
+          recommendation: "STRONG BUY",
+          signals: [],
+          risk: {
+            atr: 2,
+            entry: history[history.length - 1].close,
+            stop: 99,
+            stopMethod: "atr",
+            target: 120,
+            riskReward,
+          },
+        }));
+
+    it("minScore filter blocks entries below threshold", async () => {
+      const spy = buyMock(30, 3);
+      const result = await runBacktest(
+        {
+          symbols: ["AAA"],
+          startDate: "2026-01-05",
+          endDate: "2026-04-15",
+          startingCapital: 50_000,
+          filters: { minScore: 40 },
+        },
+        { AAA: rampSeries(100, 100, 0.2) }
+      );
+      expect(result.trades.length).toBe(0);
+      spy.mockRestore();
+    });
+
+    it("minScore filter passes entries at or above threshold", async () => {
+      const spy = buyMock(80, 3);
+      const result = await runBacktest(
+        {
+          symbols: ["AAA"],
+          startDate: "2026-01-05",
+          endDate: "2026-04-15",
+          startingCapital: 50_000,
+          filters: { minScore: 40 },
+        },
+        { AAA: rampSeries(100, 100, 0.2) }
+      );
+      expect(result.trades.length).toBeGreaterThan(0);
+      spy.mockRestore();
+    });
+
+    it("minRiskReward filter blocks entries below threshold", async () => {
+      const spy = buyMock(80, 2.0);
+      const result = await runBacktest(
+        {
+          symbols: ["AAA"],
+          startDate: "2026-01-05",
+          endDate: "2026-04-15",
+          startingCapital: 50_000,
+          filters: { minRiskReward: 2.5 },
+        },
+        { AAA: rampSeries(100, 100, 0.2) }
+      );
+      expect(result.trades.length).toBe(0);
+      spy.mockRestore();
+    });
+
+    it("minAvgDollarVolume filter excludes illiquid symbols entirely", async () => {
+      const spy = buyMock(80, 3);
+      // Bars with volume=1 → close=$100 × 1 = $100 ADV (very illiquid).
+      const result = await runBacktest(
+        {
+          symbols: ["ILLIQUID"],
+          startDate: "2026-01-05",
+          endDate: "2026-04-15",
+          startingCapital: 50_000,
+          filters: { minAvgDollarVolume: 5_000_000 },
+        },
+        { ILLIQUID: rampSeries(100, 100, 0.2, 1) }
+      );
+      expect(result.trades.length).toBe(0);
+      spy.mockRestore();
+    });
+
+    it("minAvgDollarVolume filter passes liquid symbols", async () => {
+      const spy = buyMock(80, 3);
+      // close × volume ≈ $100 × 1M = $100M ADV.
+      const result = await runBacktest(
+        {
+          symbols: ["LIQUID"],
+          startDate: "2026-01-05",
+          endDate: "2026-04-15",
+          startingCapital: 50_000,
+          filters: { minAvgDollarVolume: 5_000_000 },
+        },
+        { LIQUID: rampSeries(100, 100, 0.2, 1_000_000) }
+      );
+      expect(result.trades.length).toBeGreaterThan(0);
+      spy.mockRestore();
+    });
+
+    it("all filters undefined preserves original (no-filter) behavior", async () => {
+      const spy = buyMock(20, 1.5); // would fail score and R:R if filters applied
+      const result = await runBacktest(
+        {
+          symbols: ["AAA"],
+          startDate: "2026-01-05",
+          endDate: "2026-04-15",
+          startingCapital: 50_000,
+          // no filters
+        },
+        { AAA: rampSeries(100, 100, 0.2) }
+      );
+      // Trade still fires because no filters constrain it.
+      expect(result.trades.length).toBeGreaterThan(0);
+      spy.mockRestore();
+    });
+  });
 });

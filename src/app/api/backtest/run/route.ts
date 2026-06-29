@@ -35,6 +35,28 @@ interface RunRequestBody {
   endDate?: string;
   startingCapital?: number;
   symbols?: string[];
+  filters?: {
+    minScore?: number;
+    minAvgDollarVolume?: number;
+    minRiskReward?: number;
+  };
+}
+
+/** Drop a filter field when it's not a finite positive number. */
+function sanitiseFilters(
+  raw: RunRequestBody["filters"]
+): NonNullable<RunRequestBody["filters"]> | undefined {
+  if (!raw) return undefined;
+  const out: NonNullable<RunRequestBody["filters"]> = {};
+  let any = false;
+  for (const key of ["minScore", "minAvgDollarVolume", "minRiskReward"] as const) {
+    const v = raw[key];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+      out[key] = v;
+      any = true;
+    }
+  }
+  return any ? out : undefined;
 }
 
 function jsonLine(obj: unknown): Uint8Array {
@@ -83,6 +105,7 @@ export async function POST(req: NextRequest) {
       : BACKTEST_CONFIG.defaultStartingCapital;
 
   const symbols = Array.isArray(body.symbols) ? body.symbols : undefined;
+  const filters = sanitiseFilters(body.filters);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -103,6 +126,7 @@ export async function POST(req: NextRequest) {
             endDate: body.endDate as string,
             startingCapital,
             symbols,
+            filters,
           },
           {
             onProgress: (event) => {

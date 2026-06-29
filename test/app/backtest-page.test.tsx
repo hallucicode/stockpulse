@@ -66,6 +66,38 @@ describe("BacktestPage", () => {
     expect(screen.getByText(/End date/)).toBeInTheDocument();
   });
 
+  it("renders the filter section with all three filter knobs", () => {
+    render(<BacktestPage />);
+    expect(screen.getByText(/Signal filters/)).toBeInTheDocument();
+    expect(screen.getByText(/Min composite score/)).toBeInTheDocument();
+    expect(screen.getByText(/Min avg dollar volume/)).toBeInTheDocument();
+    expect(screen.getByText(/Min R:R/)).toBeInTheDocument();
+  });
+
+  it("sends filter values in the POST body when filters are on", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      ndjsonStreamResponse([
+        { kind: "start" },
+        {
+          kind: "done",
+          runId: "r0",
+          result: { ...FULL_RESULT, trades: [], summary: { ...FULL_RESULT.summary, tradesCount: 0 } },
+        },
+      ])
+    );
+    global.fetch = fetchSpy as unknown as typeof fetch;
+    render(<BacktestPage />);
+    fireEvent.click(screen.getByText("Run backtest"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body.filters).toEqual({
+      minScore: 40,
+      minAvgDollarVolume: 20_000_000,
+      minRiskReward: 2.5,
+    });
+  });
+
   it("clicking Run streams progress then renders summary card + trade table", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       ndjsonStreamResponse([

@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 14 + 15a + 15b (~51 days of build time).
+**Done so far:** Phases 0 through 14 + 15a + 15b + 15b.1 (~51.5 days of build time).
 
 ---
 
@@ -898,3 +898,28 @@ This is also the **scientifically correct** order: isolate technical-scoring per
 **Browser-verified:** `/backtest` page renders cleanly — H1, prominent survivorship banner, date inputs + capital input, Run button. No console errors, no React error overlay. Screenshot captured.
 
 ### Effort: **~2 days** (vs 2.5 estimated — the planned core refactor turned out unnecessary because `analyzeStock` was already pure; the execution model + simulator + API + UI took the full 2 days as expected).
+
+---
+
+### Phase 15b.1 — Backtest signal filters (post-merge follow-up)
+
+**Why this exists:** the first cut of 15b shipped the indiscriminate "trade every BUY signal across all 983 watchlist symbols" baseline. Real-user testing produced **-22.5% return on 270 trades with 24% win rate** — a sane finding (the technical-only signal on its own is dominated by noise), but unhelpful as an actionable result. The user asked "what's the usefulness?". Three filter knobs convert the backtest from "indiscriminate baseline" into "what would my actual curated strategy have done in history".
+
+**Shipped:**
+
+- **`BacktestFilters` type** in `src/lib/backtest.ts` with three optional knobs:
+  - `minScore` — only enter when `compositeScore ≥ this` (UI default: 40 = STRONG BUY only).
+  - `minAvgDollarVolume` — drop symbols whose lifetime avg dollar volume falls below the floor (UI default: $20M).
+  - `minRiskReward` — only enter when the risk packet's R:R ≥ this (UI default: 2.5).
+  - All three defaults preserve the original v1 behaviour when omitted, so existing backtests are bit-for-bit unchanged.
+- **Simulator applies filters at the signal-check site.** ADV filter is computed once per symbol (across full history) and looked up per signal; minScore/minRiskReward gates fire before `pendingEntries.push`.
+- **API surface** (`POST /api/backtest/run`) accepts `filters: { minScore?, minAvgDollarVolume?, minRiskReward? }` and sanitises: non-finite or negative values are silently dropped; an all-invalid filters object collapses to `undefined` so the simulator sees the unfiltered path.
+- **`/backtest` page** gets a "Signal filters" collapsible section (default open) with one checkbox + number input per filter. Each row has an inline hint (`40 = STRONG BUY only · 15 = BUY threshold · 0 = all`, etc.) so the user understands the dial without leaving the form.
+
+**Tests:** 6 new simulator-filter tests (each filter blocks below threshold + passes at threshold; no-filter preserves original behaviour), 3 new API tests (forwards values, sanitises bad ones, omits empty filters), 2 new page tests (filter section renders, filter values appear in POST body). **987 total tests pass** (was 976). Coverage **98.31 / 92.32 / 95.72 / 98.31**.
+
+**Browser-verified:** all three filters render with their defaults (40 / $20M / 2.5), inline hints visible, Run button present. Filter section collapsible.
+
+**Effort:** ~0.5 day.
+
+### Total Phase 15b effort: **~2.5 days** (base 2 d + 0.5 d 15b.1 filters). Matched the original plan estimate — the time freed by the no-needed `analyzeStock` refactor went into the filter follow-up.
