@@ -254,7 +254,59 @@ export async function runBacktest(
     const currentDate = tradingDates[dayIdx];
     let tradesClosedToday = 0;
 
-    // ── 1. Execute queued entries from the previous day on TODAY's bar.
+    // ── 1. Check stop/target for every position that was ALREADY open at
+    //     the start of today's bar. Positions opened today (in step 2
+    //     below) deliberately don't get checked until tomorrow — a
+    //     market order that fills today can't also be stopped out at
+    //     the same bar's low. Without this ordering, ~30% of trades
+    //     in real backtests appear as same-bar entry+stop pairs with
+    //     manufactured losses of approximately (bar.high − bar.low) ×
+    //     shares each. Phase 15b.2 bug fix.
+    for (const [symbol, pos] of Array.from(openPositions.entries())) {
+      const barIdx = dateIndex.get(symbol)?.get(currentDate);
+      if (barIdx === undefined) continue; // no bar today (halt/delisting)
+      const bars = barsBySymbol[symbol];
+      const bar = bars[barIdx];
+      const recentBars = bars.slice(
+        Math.max(0, barIdx - BACKTEST_CONFIG.avgVolumeLookbackBars + 1),
+        barIdx + 1
+      );
+      const adv = computeAvgDollarVolume(
+        recentBars.map(toBacktestBar),
+        BACKTEST_CONFIG.avgVolumeLookbackBars
+      );
+      const spreadPct = computeSpread(adv);
+      const exit = simulateStopTargetExit({
+        bar: toBacktestBar(bar),
+        stopPrice: pos.stopPrice,
+        targetPrice: pos.targetPrice,
+        spreadPct,
+      });
+      if (exit.reason && exit.price !== null) {
+        cash += exit.price * pos.shares;
+        const pl = (exit.price - pos.entryPrice) * pos.shares;
+        trades.push({
+          symbol,
+          entryDate: pos.entryDate,
+          entryPrice: pos.entryPrice,
+          exitDate: currentDate,
+          exitPrice: exit.price,
+          shares: pos.shares,
+          exitReason: exit.reason,
+          pl,
+          plPct: ((exit.price - pos.entryPrice) / pos.entryPrice) * 100,
+          signalsAtEntry: pos.signalsAtEntry,
+          scoreAtEntry: pos.scoreAtEntry,
+        });
+        openPositions.delete(symbol);
+        tradesClosedToday += 1;
+      }
+    }
+
+    // ── 2. Execute queued entries from the previous day on TODAY's bar.
+    //     Runs AFTER step 1 so positions opened today aren't checked
+    //     for stop/target on the same bar — the position only becomes
+    //     "alive" for exit checks starting tomorrow.
     if (pendingEntries.length > 0) {
       for (const entry of pendingEntries) {
         const barIdx = dateIndex.get(entry.symbol)?.get(currentDate);
@@ -299,48 +351,6 @@ export async function runBacktest(
         });
       }
       pendingEntries = [];
-    }
-
-    // ── 2. Check stop/target for every open position against TODAY's bar.
-    for (const [symbol, pos] of Array.from(openPositions.entries())) {
-      const barIdx = dateIndex.get(symbol)?.get(currentDate);
-      if (barIdx === undefined) continue; // no bar today (halt/delisting)
-      const bars = barsBySymbol[symbol];
-      const bar = bars[barIdx];
-      const recentBars = bars.slice(
-        Math.max(0, barIdx - BACKTEST_CONFIG.avgVolumeLookbackBars + 1),
-        barIdx + 1
-      );
-      const adv = computeAvgDollarVolume(
-        recentBars.map(toBacktestBar),
-        BACKTEST_CONFIG.avgVolumeLookbackBars
-      );
-      const spreadPct = computeSpread(adv);
-      const exit = simulateStopTargetExit({
-        bar: toBacktestBar(bar),
-        stopPrice: pos.stopPrice,
-        targetPrice: pos.targetPrice,
-        spreadPct,
-      });
-      if (exit.reason && exit.price !== null) {
-        cash += exit.price * pos.shares;
-        const pl = (exit.price - pos.entryPrice) * pos.shares;
-        trades.push({
-          symbol,
-          entryDate: pos.entryDate,
-          entryPrice: pos.entryPrice,
-          exitDate: currentDate,
-          exitPrice: exit.price,
-          shares: pos.shares,
-          exitReason: exit.reason,
-          pl,
-          plPct: ((exit.price - pos.entryPrice) / pos.entryPrice) * 100,
-          signalsAtEntry: pos.signalsAtEntry,
-          scoreAtEntry: pos.scoreAtEntry,
-        });
-        openPositions.delete(symbol);
-        tradesClosedToday += 1;
-      }
     }
 
     // ── 3. Generate new entry signals for D+1 from TODAY's data.

@@ -2,7 +2,7 @@
 
 Phases that have shipped. The active roadmap lives in `IMPLEMENTATION_PLAN.md` — when an upcoming phase is finished, **move its section here** so the active plan stays focused on what's still to do.
 
-**Done so far:** Phases 0 through 14 + 15a + 15b + 15b.1 (~51.5 days of build time).
+**Done so far:** Phases 0 through 14 + 15a + 15b + 15b.1 + 15b.2 (~52 days of build time).
 
 ---
 
@@ -923,3 +923,42 @@ This is also the **scientifically correct** order: isolate technical-scoring per
 **Effort:** ~0.5 day.
 
 ### Total Phase 15b effort: **~2.5 days** (base 2 d + 0.5 d 15b.1 filters). Matched the original plan estimate — the time freed by the no-needed `analyzeStock` refactor went into the filter follow-up.
+
+---
+
+### Phase 15b.2 — fix same-bar entry+exit modeling bug
+
+**Why this exists:** when the user asked "can you verify the backtest is correct?" I dug into the persisted -22.5% baseline run and found that **83 out of 270 trades (31%) had `entryDate === exitDate`** — i.e. the position opened and closed on the same trading bar. That's physically impossible in real trading and was producing manufactured losses of approximately `(bar.high - bar.low) × shares` each.
+
+**Mechanism of the bug:** the day-loop in `runBacktest` executed pending entries (step 1) **before** checking stop/target on open positions (step 2). The newly-opened position was therefore checked against the same bar that just filled it — if `bar.low ≤ stopPrice`, the stop "fired" the same bar.
+
+**Fix:** swap step 1 and step 2. Now exit checks run *first* against positions that were already open at start-of-day. Positions opened on day D get their first stop/target check on day D+1, matching real-world execution semantics (a market order filling today, with the stop-loss order active from tomorrow onward).
+
+**Impact measured against the user's exact dataset:**
+
+| Scenario | Trades | Win rate | Total return | Same-day round-trips |
+|---|---|---|---|---|
+| Pre-fix, unfiltered | 270 | 24.4% | -22.5% | **83 (31%)** |
+| Post-fix, unfiltered | 236 | 24.6% | **-21.1%** | **0** |
+| Pre-fix, filtered (40/$20M/2.5) | 429 | 23.8% | -47.5% | 0 |
+| Post-fix, filtered (same) | 429 | 23.8% | -47.5% | 0 |
+
+The bug only bit the **unfiltered baseline** (the indiscriminate "trade every BUY signal" path). When filters were on, signal quality + wider stops meant `bar.low ≤ stopPrice` rarely held — so the bug didn't manifest. This explains why the same-bar fix only moved the unfiltered baseline by ~1.4% (-22.5% → -21.1%) instead of the 5–10% I initially hoped: the filtered runs were already correct, and the manufactured losses in the unfiltered baseline were small per-trade (the bar's high-to-low spread, not full-stop distance).
+
+**More important finding from the verification dive:** the filtered runs returning **-47.5%** are honest. The technical-only signal is genuinely weak across a 1-year window on the full watchlist — filtering by score/R:R doesn't rescue it because it just samples fewer of an already-weak signal distribution. This re-confirms the original "v1 measures the technical substrate only — catalysts/regime/insider/options carry the live alpha and can't be reconstructed historically" caveat we banner on the page.
+
+**Tests added:**
+- **`a position opened on day D is NEVER closed on day D`** — synthetic 100-bar scenario with a wide stop guaranteed not to trigger, asserts `trade.entryDate !== trade.exitDate`. The canonical invariant test for this class of bug; any regression here will fail loudly.
+- Regression test re-running the synthetic E2E from 15b confirming target-hit path still works after the loop swap.
+
+**Tests & coverage:**
+- **989 total tests pass** (was 987). Coverage **98.31 / 92.32 / 95.72 / 98.31** — all thresholds clear.
+- The 14 existing simulator tests all pass unchanged after the loop swap — confirming the fix is behaviour-preserving for the test scenarios that didn't have same-bar conflicts.
+
+**Browser-verified:** ran the user's exact -22.5% baseline via the live API; got `tradesCount: 236, totalReturnPct: -21.06%, sameDay: 0` — matches expectation.
+
+**Note on "filter values mismatch" suspicion:** while diagnosing, I noticed one persisted run had `minScore: 10` despite the user reporting `50`. Initial suspicion was a UI state bug. After listing all 9 runs in the DB, every filter value matched what the user could have entered — the `minScore: 10` run was the user explicitly dialing the score down to compare with the indiscriminate baseline. **Not a UI bug.** No action needed.
+
+**Effort:** ~30 minutes.
+
+### Total Phase 15b effort: **~3 days** (base 2 d + 0.5 d 15b.1 filters + 0.5 d 15b.2 same-bar fix + verification dive). Slightly over the 2.5-day plan because of the post-merge bug hunt — exactly the kind of work the verification was *for*.
