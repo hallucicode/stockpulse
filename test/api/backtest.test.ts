@@ -152,6 +152,69 @@ describe("POST /api/backtest/run", () => {
     expect(res.status).toBe(400);
   });
 
+  it("forwards filters to the source layer (Phase 15b.1)", async () => {
+    sourceMock.runAndPersistBacktest.mockResolvedValue({
+      runId: "run-1",
+      result: { summary: {} },
+    });
+    await postRun(
+      makeRequest({
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        startingCapital: 50_000,
+        filters: {
+          minScore: 40,
+          minAvgDollarVolume: 20_000_000,
+          minRiskReward: 2.5,
+        },
+      }) as never
+    );
+    const callArgs = sourceMock.runAndPersistBacktest.mock.calls[0][0];
+    expect(callArgs.filters).toEqual({
+      minScore: 40,
+      minAvgDollarVolume: 20_000_000,
+      minRiskReward: 2.5,
+    });
+  });
+
+  it("sanitises filters — drops non-finite + negative values", async () => {
+    sourceMock.runAndPersistBacktest.mockResolvedValue({
+      runId: "run-1",
+      result: { summary: {} },
+    });
+    await postRun(
+      makeRequest({
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        startingCapital: 50_000,
+        filters: {
+          minScore: 50, // good
+          minAvgDollarVolume: -100, // dropped (negative)
+          minRiskReward: "bad", // dropped (non-numeric)
+        },
+      }) as never
+    );
+    const callArgs = sourceMock.runAndPersistBacktest.mock.calls[0][0];
+    expect(callArgs.filters).toEqual({ minScore: 50 });
+  });
+
+  it("omits the filters key entirely when all values are invalid/absent", async () => {
+    sourceMock.runAndPersistBacktest.mockResolvedValue({
+      runId: "run-1",
+      result: { summary: {} },
+    });
+    await postRun(
+      makeRequest({
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        startingCapital: 50_000,
+        filters: { minScore: NaN, minAvgDollarVolume: -1 },
+      }) as never
+    );
+    const callArgs = sourceMock.runAndPersistBacktest.mock.calls[0][0];
+    expect(callArgs.filters).toBeUndefined();
+  });
+
   it("emits an inline error event when the simulator throws", async () => {
     sourceMock.runAndPersistBacktest.mockRejectedValue(new Error("DB down"));
     const res = await postRun(

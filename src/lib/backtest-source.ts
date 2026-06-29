@@ -11,6 +11,7 @@ import { db } from "./db";
 import type { HistoricalBar } from "@/types";
 import {
   runBacktest,
+  type BacktestFilters,
   type BacktestParams,
   type BacktestResult,
   type RunBacktestOptions,
@@ -64,7 +65,10 @@ export interface PersistedBacktestRun {
  * extra DB read.
  */
 export async function runAndPersistBacktest(
-  params: Omit<BacktestParams, "symbols"> & { symbols?: string[] },
+  params: Omit<BacktestParams, "symbols"> & {
+    symbols?: string[];
+    filters?: BacktestFilters;
+  },
   options: RunBacktestOptions = {}
 ): Promise<PersistedBacktestRun> {
   // Default to the watchlist when caller doesn't supply symbols.
@@ -80,6 +84,7 @@ export async function runAndPersistBacktest(
     symbolCount: symbols.length,
     startDate: params.startDate,
     endDate: params.endDate,
+    filters: params.filters,
   });
 
   const startedAt = new Date();
@@ -90,6 +95,7 @@ export async function runAndPersistBacktest(
     startDate: params.startDate,
     endDate: params.endDate,
     startingCapital: params.startingCapital,
+    filters: params.filters,
   };
 
   const result = await runBacktest(fullParams, barsBySymbol, options);

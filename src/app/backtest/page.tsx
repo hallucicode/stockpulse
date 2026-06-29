@@ -95,6 +95,15 @@ export default function BacktestPage() {
   const [startDate, setStartDate] = useState(defaultStart());
   const [endDate, setEndDate] = useState(defaultEnd());
   const [startingCapital, setStartingCapital] = useState(50_000);
+  // Filter knobs — defaults applied if checkbox is on. Off = no filter
+  // at that dimension (the original Phase 15b indiscriminate baseline).
+  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [filterScoreOn, setFilterScoreOn] = useState(true);
+  const [minScore, setMinScore] = useState(40);
+  const [filterAdvOn, setFilterAdvOn] = useState(true);
+  const [minAvgDollarVolume, setMinAvgDollarVolume] = useState(20_000_000);
+  const [filterRrOn, setFilterRrOn] = useState(true);
+  const [minRiskReward, setMinRiskReward] = useState(2.5);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const [result, setResult] = useState<BacktestResult | null>(null);
@@ -114,10 +123,19 @@ export default function BacktestPage() {
       tradesClosed: 0,
     });
     try {
+      const filters: Record<string, number> = {};
+      if (filterScoreOn) filters.minScore = minScore;
+      if (filterAdvOn) filters.minAvgDollarVolume = minAvgDollarVolume;
+      if (filterRrOn) filters.minRiskReward = minRiskReward;
       const res = await fetch("/api/backtest/run", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ startDate, endDate, startingCapital }),
+        body: JSON.stringify({
+          startDate,
+          endDate,
+          startingCapital,
+          filters: Object.keys(filters).length > 0 ? filters : undefined,
+        }),
       });
       if (!res.ok || !res.body) {
         const body = await res.json().catch(() => ({}));
@@ -252,6 +270,94 @@ export default function BacktestPage() {
             />
           </label>
         </div>
+
+        {/* Filter section — collapsible. Defaults to open + all three
+            filters enabled because the unfiltered baseline measured
+            the indiscriminate "trade every BUY signal" strategy which
+            is dominated by noise. Disable filters individually to see
+            how the unfiltered behaviour compares. */}
+        <button
+          type="button"
+          onClick={() => setFiltersOpen((v) => !v)}
+          className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold hover:text-slate-400 mb-2"
+        >
+          {filtersOpen ? "▼" : "▶"} Signal filters
+        </button>
+        {filtersOpen && (
+          <div className="rounded-md bg-white/[0.02] p-3 mb-3 flex flex-col gap-2.5">
+            <label className="flex items-center gap-2 text-[11px]">
+              <input
+                type="checkbox"
+                checked={filterScoreOn}
+                onChange={(e) => setFilterScoreOn(e.target.checked)}
+                disabled={running}
+              />
+              <span className="text-slate-400 w-44 shrink-0">
+                Min composite score
+              </span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={5}
+                value={minScore}
+                onChange={(e) => setMinScore(Number(e.target.value))}
+                disabled={running || !filterScoreOn}
+                className="w-20 px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-slate-200 font-mono outline-none focus:border-cyan-500/30 disabled:opacity-50"
+              />
+              <span className="text-[10px] text-slate-600">
+                40 = STRONG BUY only · 15 = BUY threshold · 0 = all
+              </span>
+            </label>
+            <label className="flex items-center gap-2 text-[11px]">
+              <input
+                type="checkbox"
+                checked={filterAdvOn}
+                onChange={(e) => setFilterAdvOn(e.target.checked)}
+                disabled={running}
+              />
+              <span className="text-slate-400 w-44 shrink-0">
+                Min avg dollar volume
+              </span>
+              <input
+                type="number"
+                min={0}
+                step={1_000_000}
+                value={minAvgDollarVolume}
+                onChange={(e) =>
+                  setMinAvgDollarVolume(Number(e.target.value))
+                }
+                disabled={running || !filterAdvOn}
+                className="w-32 px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-slate-200 font-mono outline-none focus:border-cyan-500/30 disabled:opacity-50"
+              />
+              <span className="text-[10px] text-slate-600">
+                $20M = drops illiquid junk · $50M = liquid large caps
+              </span>
+            </label>
+            <label className="flex items-center gap-2 text-[11px]">
+              <input
+                type="checkbox"
+                checked={filterRrOn}
+                onChange={(e) => setFilterRrOn(e.target.checked)}
+                disabled={running}
+              />
+              <span className="text-slate-400 w-44 shrink-0">Min R:R</span>
+              <input
+                type="number"
+                min={0}
+                step={0.5}
+                value={minRiskReward}
+                onChange={(e) => setMinRiskReward(Number(e.target.value))}
+                disabled={running || !filterRrOn}
+                className="w-20 px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-slate-200 font-mono outline-none focus:border-cyan-500/30 disabled:opacity-50"
+              />
+              <span className="text-[10px] text-slate-600">
+                Skip setups where reward-to-risk &lt; this
+              </span>
+            </label>
+          </div>
+        )}
+
         <div className="flex justify-end">
           <button
             onClick={handleRun}
